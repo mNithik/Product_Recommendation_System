@@ -1,0 +1,11 @@
+# Dataset (too large for GitHub ~875MB)
+Toys_and_Games_5.json/
+
+# Generated train/test splits
+data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
