@@ -1,0 +1,23 @@
+data:
+  raw_path: "Arts_Crafts_and_Sewing_5.json/Arts_Crafts_and_Sewing_5.json"
+  small_mode: true
+  train_ratio: 0.8
+  random_state: 42
+
+model:
+  type: "bpr"
+  n_factors: 64
+  n_epochs: 20
+  lr: 0.001
+  reg: 0.0001
+  use_gpu: true
+
+evaluation:
+  top_n: 10
+  max_candidates: 50000
+  min_train_ratings: 5
+  relevance_threshold: 4.0
+
+experiment:
+  name: "small_quick_run"
+  output_dir: "experiments"

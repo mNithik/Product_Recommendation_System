@@ -1,79 +1,187 @@
 # Product Recommendation System
 
-Offline recommender system for **Amazon Toys & Games** review data (5-core). Built for **CS550**: per-user train/test split, rating prediction, and Top-N recommendation with standard evaluation metrics.
+A reproducible recommendation engine built on the **Amazon Arts, Crafts & Sewing 5-core** dataset. Implements six models — from a popularity baseline to GPU-accelerated matrix factorization, BPR, and WARP ranking — with full evaluation and a Streamlit demo for interactive exploration.
 
-## Features
+---
 
-- **Preprocessing**: Loads review JSONL, applies an **80/20 split per user** (seeded), writes `data/train.json` and `data/test.json`.
-- **Models** (see `config.py`):
-  - **Matrix Factorization (GPU)** — PyTorch ALS-style training with user/item biases when `USE_GPU = True` and CUDA is available.
-  - **Item-based collaborative filtering (CPU)** — Adjusted cosine similarity, *k* nearest neighbors; used when GPU MF is disabled or CUDA is unavailable.
-- **Metrics**: **MAE**, **RMSE** (rating prediction); **Precision@N**, **Recall@N**, **F-measure**, **NDCG@N** (Top-N). MF mode also reports a **candidate hit rate** diagnostic.
+## Problem
 
-## Requirements
+Users interact with a vast catalog of products, but only rate a tiny fraction. The resulting user-item matrix is extremely sparse, making it difficult to predict preferences. This project addresses that challenge by:
 
-- Python 3.9+ recommended
-- Dependencies: `pip install -r requirements.txt`
-- **GPU (optional)**: CUDA-capable GPU + PyTorch with CUDA for the MF path; otherwise the pipeline falls back to item-based CF on CPU.
+- Learning latent user and item representations from observed ratings
+- Predicting explicit ratings for unseen user-item pairs (MAE, RMSE)
+- Generating personalized **Top-10** recommendation lists ranked by relevance (Precision, Recall, F1, NDCG)
+- Comparing **rating-optimized** vs **ranking-optimized** training objectives
 
 ## Dataset
 
-The raw dataset is **not** included in the repository (large; see `.gitignore`, on the order of hundreds of MB).
+| Statistic | Value |
+|---|---|
+| **Source** | [Amazon Reviews — Arts, Crafts & Sewing 5-core](https://nijianmo.github.io/amazon/index.html) |
+| **Users** | 56,210 |
+| **Items** | 22,917 |
+| **Interactions** | 494,485 |
+| **Rating scale** | 1 – 5 |
+| **Sparsity** | ~99.96 % |
 
-1. Obtain the **Amazon Toys & Games 5-core** reviews file (JSON lines), e.g. from [Julian McAuley’s Amazon review datasets](https://jmcauley.ucsd.edu/data/amazon/).
-2. Create this layout at the project root:
+> *5-core* means every user and item has at least 5 reviews.
 
-   ```text
-   Product Recommendation System/
-   └── Toys_and_Games_5.json/
-       └── Toys_and_Games_5.json   # one JSON object per line
-   ```
+## Pipeline
 
-   Each line should include at least `reviewerID`, `asin`, and `overall` (1–5 rating). Optional fields `reviewText` and `summary` are preserved in the train/test files.
-
-## Quick start
-
-```bash
-cd "Product Recommendation System"
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-python main.py
+```
+Raw JSONL data (494K reviews)
+    │
+    ▼
+Preprocessing (per-user 80/20 random split)
+    │
+    ├──► train.json (375,028)
+    └──► test.json  (119,457)
+           │
+           ▼
+    ┌─────────────────────────────────┐
+    │  Rating Prediction              │
+    │  Popularity, MF (ALS on GPU)    │──► MAE, RMSE
+    └─────────────────────────────────┘
+           │
+           ▼
+    ┌─────────────────────────────────┐
+    │  Top-10 Ranking                 │
+    │  Popularity, BPR (custom),      │
+    │  BPR (implicit), Implicit ALS,  │──► Precision@10, Recall@10, F1, NDCG@10
+    │  WARP (custom)                  │
+    └─────────────────────────────────┘
+           │
+           ▼
+    Experiment JSON + Results Table
 ```
 
-- First run: if `data/train.json` and `data/test.json` are missing, `main.py` runs preprocessing on `Toys_and_Games_5.json/Toys_and_Games_5.json`, then trains and evaluates.
-- Later runs: if train/test already exist, preprocessing is skipped.
+## Models Implemented
 
-To **rebuild** the split only:
+| Model | Type | Built From Scratch | Use |
+|---|---|---|---|
+| **Popularity Baseline** | Non-personalized, most-popular items | Yes | Baseline |
+| **Matrix Factorization (ALS)** | Latent factor model with biases, GPU-accelerated | Yes (PyTorch) | Rating prediction |
+| **BPR (custom)** | Pairwise ranking with hard negative sampling | Yes (PyTorch) | Top-N ranking |
+| **BPR (implicit library)** | Optimized C++/CUDA BPR backend | No (library) | Comparison |
+| **Implicit ALS** | Weighted implicit feedback MF | No (library) | Top-N ranking |
+| **WARP (custom)** | Approximate-rank pairwise loss, top-of-list optimized | Yes (PyTorch) | Top-N ranking |
+
+## Results
+
+### Rating Prediction
+
+| Model | MAE ↓ | RMSE ↓ |
+|---|---|---|
+| Popularity Baseline | 0.6234 | 0.9340 |
+| **Matrix Factorization (ALS)** | **0.4632** | **0.8193** |
+
+### Top-10 Recommendation
+
+| Model | P@10 ↑ | R@10 ↑ | F1 ↑ | NDCG@10 ↑ | Time |
+|---|---|---|---|---|---|
+| Popularity Baseline | 0.0023 | 0.0087 | 0.0036 | 0.0086 | 1s |
+| BPR (custom PyTorch) | 0.0019 | 0.0072 | 0.0030 | 0.0079 | 273s |
+| BPR (implicit library) | 0.0007 | 0.0027 | 0.0011 | 0.0015 | 8s |
+| **WARP (custom PyTorch)** | **0.0148** | **0.0590** | **0.0237** | **0.0462** | 65s |
+| **Implicit ALS** | **0.0188** | **0.0735** | **0.0300** | **0.0667** | 11s |
+
+> **Key finding:** Models trained with rating-prediction objectives (MF/ALS for RMSE) perform poorly on ranking tasks. Ranking-optimized models (WARP, Implicit ALS) achieve 6–8x better Precision@10 and NDCG@10, confirming that the training objective must match the evaluation metric.
+
+## Demo
+
+Interactive Streamlit app with four tabs:
+
+- **Recommend for User** — select a user and model, see Top-N recommendations with explainability
+- **Model Comparison** — full results table with bar charts comparing all 6 models
+- **Popular Items** — browse the most-rated items
+- **Dataset Explorer** — rating distributions, interactions per user, sample data
 
 ```bash
-python preprocess.py
+streamlit run app/demo.py
+```
+
+### Features
+- Model selection (Implicit ALS / WARP / BPR custom / BPR implicit / Popularity) in sidebar
+- Adjustable number of recommendations
+- **Explainability**: each recommendation shows *why* it was suggested
+- Cold-start fallback to popularity for new users
+- Dataset statistics dashboard
+
+## Project Structure
+
+```
+recommender-system/
+├── app/
+│   └── demo.py             # Streamlit demo
+├── data/                    # Generated train/test splits (gitignored)
+├── src/
+│   ├── preprocessing/       # Data loading, per-user splitting, subsampling
+│   ├── models/
+│   │   ├── popularity.py    # Popularity baseline
+│   │   ├── item_cf.py       # Item-based CF (from scratch)
+│   │   ├── matrix_factorization.py  # ALS on GPU (from scratch)
+│   │   ├── bpr.py           # BPR with hard negatives (from scratch)
+│   │   ├── warp.py          # WARP loss (from scratch)
+│   │   ├── implicit_bpr.py  # BPR via implicit library
+│   │   └── implicit_als.py  # ALS via implicit library
+│   ├── evaluation/          # MAE, RMSE, Precision, Recall, F1, NDCG
+│   └── utils/               # Config loader, data loader, experiment tracker
+├── configs/                 # YAML experiment configs
+├── tests/                   # pytest unit & integration tests (40 tests)
+├── experiments/             # Auto-saved experiment JSONs
+├── requirements.txt
+├── README.md
+└── main.py                  # Runs all 6 models head-to-head
+```
+
+## Quick Start
+
+```bash
+# 1. Clone
+git clone https://github.com/mNithik/Product_Recommendation_System.git
+cd Product_Recommendation_System
+
+# 2. Install dependencies
+pip install -r requirements.txt
+
+# 3. Place dataset
+#    Download Arts_Crafts_and_Sewing_5.json into Arts_Crafts_and_Sewing_5.json/
+
+# 4. Run the full pipeline (all 6 models, ~20 min)
+python main.py --config configs/default.yaml
+
+# 5. Launch demo
+streamlit run app/demo.py
+
+# 6. Run tests
+pytest tests/ -v
 ```
 
 ## Configuration
 
-Edit `config.py`:
+All hyperparameters are controlled via YAML:
 
-| Setting | Role |
-|--------|------|
-| `RAW_DATA_PATH` / `DATA_DIR` | Location of raw JSONL |
-| `TRAIN_PATH`, `TEST_PATH` | Output split files |
-| `TRAIN_RATIO`, `RANDOM_STATE` | Split fraction and seed |
-| `TOP_N` | List length for ranking metrics |
-| `MAX_CANDIDATES` | Cap on candidate items for MF Top-N |
-| `MIN_TRAIN_RATINGS` | Minimum train ratings per user to include in Top-N evaluation |
-| `USE_GPU` | Prefer MF on GPU when `True` |
+```yaml
+model:
+  type: "bpr"               # bpr | bpr_implicit | item_cf | matrix_factorization
+  n_factors: 64
+  n_epochs: 20
+  lr: 0.001
+  reg: 0.0001
+  mf_epochs: 5
 
-## Project layout
+evaluation:
+  top_n: 10
+  relevance_threshold: 4.0
+  min_train_ratings: 5
+```
 
-| File | Purpose |
-|------|---------|
-| `main.py` | End-to-end pipeline: preprocess (if needed), fit, evaluate |
-| `preprocess.py` | Standalone preprocessing |
-| `recommender.py` | Models, data loading, metrics |
-| `config.py` | Paths and hyperparameters |
-| `requirements.txt` | Python dependencies |
+Each run auto-saves config + all metrics to `experiments/<name>_<timestamp>.json`.
 
-## License / course use
+## Future Improvements
 
-See course materials (`CS550-Project-description.pdf`) for submission and attribution requirements. Dataset terms apply per the original Amazon data release.
+- **Hybrid recommendations** — combine CF with item metadata / review text embeddings (TF-IDF, sentence transformers)
+- **LightGCN** — graph convolution over the user-item bipartite graph for stronger ranking
+- **Cold-start handling** — content-based fallback using review text for new items
+- **ANN retrieval** — FAISS/ScaNN for sub-linear candidate generation at scale
+- **Online serving** — FastAPI endpoint with cached embeddings for real-time inference
