@@ -1,4 +1,4 @@
-"""Data preprocessing for Amazon Toys and Games 5-core dataset."""
+"""Data preprocessing for Amazon Arts, Crafts & Sewing 5-core dataset."""
 
 import json
 import logging
