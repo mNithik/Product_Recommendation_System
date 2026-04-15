@@ -8,6 +8,7 @@ Run:
 import json
 import os
 import sys
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -296,9 +297,19 @@ with tab1:
         st.caption(f"Model: **{model_choice}**")
 
         with st.spinner(f"Running {model_choice}..."):
+            fit_start = time.perf_counter()
             model = fit_model(train_path, model_choice)
+            fit_elapsed = time.perf_counter() - fit_start
         exclude = {e["item"] for e in history}
+        rec_start = time.perf_counter()
         recs = model.recommend_top_n(user_id, n=top_n, exclude_items=exclude)
+        rec_elapsed = time.perf_counter() - rec_start
+        total_elapsed = fit_elapsed + rec_elapsed
+
+        t1, t2, t3 = st.columns(3)
+        t1.metric("Model fit/load time", f"{fit_elapsed:.2f}s")
+        t2.metric("Recommendation time", f"{rec_elapsed:.2f}s")
+        t3.metric("Total time", f"{total_elapsed:.2f}s")
 
         if not recs:
             st.warning("No recommendations available for this user.")
