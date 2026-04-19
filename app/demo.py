@@ -18,6 +18,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.explainability import ItemSimilarityIndex, explain_recommendation
 from src.evaluation.late_fusion import evaluate_late_fusion_recommendations, rank_items_late_fusion
 from src.trustworthiness.text_profiles import ReviewTextProfileIndex
 from src.utils.data_loader import load_data
@@ -102,6 +103,12 @@ def build_user_item_maps(train_data_json: str):
         s["avg_rating"] = s["sum"] / s["count"]
 
     return dict(user_items), dict(item_stats)
+
+
+@st.cache_resource(show_spinner="Building explanation index...")
+def build_explanation_index(train_path: str):
+    train_data = load_data(train_path)
+    return ItemSimilarityIndex(train_data)
 
 
 @st.cache_resource(show_spinner="Fitting recommendation model...")
@@ -211,37 +218,6 @@ def load_experiment_results():
         return json.load(f)
 
 
-def find_explanation(user_id: str, recommended_item: str, user_items: dict,
-                     item_stats: dict) -> str:
-    user_history = user_items.get(user_id, [])
-    if not user_history:
-        return "Recommended because this item is popular across all users."
-
-    rec_users = set(item_stats.get(recommended_item, {}).get("users", []))
-    overlap_items = []
-    for entry in user_history:
-        iid = entry["item"]
-        if entry["rating"] >= 4.0:
-            iid_users = set(item_stats.get(iid, {}).get("users", []))
-            common = len(rec_users & iid_users)
-            if common > 0:
-                overlap_items.append((iid, entry["rating"], common))
-
-    overlap_items.sort(key=lambda x: (-x[2], -x[1]))
-
-    if overlap_items:
-        top = overlap_items[0]
-        return (f"Recommended because you rated **{top[0]}** "
-                f"({top[1]:.0f}/5) and {top[2]} users who liked that also liked this item.")
-
-    high_rated = [e for e in user_history if e["rating"] >= 4.0]
-    if high_rated:
-        return (f"Recommended based on your taste profile — "
-                f"you've rated {len(high_rated)} items highly.")
-
-    return "Recommended because this item is popular among similar users."
-
-
 # ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
@@ -296,6 +272,7 @@ st.sidebar.caption("Built for CS550 — Massive Data Mining")
 train_data, test_data = load_train_test(train_path, test_path)
 train_json = json.dumps(train_data)
 user_items, item_stats = build_user_item_maps(train_json)
+explanation_index = build_explanation_index(train_path)
 
 all_users = sorted(user_items.keys())
 all_items = sorted(item_stats.keys())
@@ -416,9 +393,34 @@ with tab1:
                 """, unsafe_allow_html=True)
 
                 if show_explanations:
-                    explanation = find_explanation(user_id, item_id, user_items, item_stats)
-                    st.markdown(f'<div class="explain-box">💡 {explanation}</div>',
-                                unsafe_allow_html=True)
+                    explanation = explain_recommendation(explanation_index, user_id, item_id)
+                    st.markdown(
+                        f'<div class="explain-box"><b>Why this item:</b> {explanation.explanation_text}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(
+                        f'<div class="explain-box"><b>Support confidence:</b> {explanation.support_confidence:.3f}'
+                        f' &nbsp;|&nbsp; <b>Type:</b> {explanation.explanation_type}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    if explanation.supporting_history:
+                        support_text = ", ".join(
+                            f"{row.item_id} (overlap={row.user_overlap}, sim={row.similarity:.2f})"
+                            for row in explanation.supporting_history
+                        )
+                        st.markdown(
+                            f'<div class="explain-box"><b>Supporting history:</b> {support_text}</div>',
+                            unsafe_allow_html=True,
+                        )
+                    if explanation.supporting_similar_items:
+                        similar_text = ", ".join(
+                            f"{row.item_id} (sim={row.similarity:.2f})"
+                            for row in explanation.supporting_similar_items
+                        )
+                        st.markdown(
+                            f'<div class="explain-box"><b>Supporting similar items:</b> {similar_text}</div>',
+                            unsafe_allow_html=True,
+                        )
                     if text_idx is not None:
                         sim = text_idx.cosine_user_item(train_data, user_id, item_id)
                         st.markdown(
