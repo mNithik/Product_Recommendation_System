@@ -6,6 +6,8 @@ from collections import defaultdict
 import numpy as np
 from tqdm import tqdm
 
+from src.pipeline import rank_items_for_user, rank_items_for_users, recommend_from_ranking
+
 logger = logging.getLogger(__name__)
 
 
@@ -152,13 +154,18 @@ def evaluate_recommendations(model, train_data, test_data, top_n=10,
                 {model.item_idx[iid] for iid in train_by_user[u] if iid in model.item_idx}
                 for u in batch_users
             ]
-            recs_batch = model.recommend_top_n_batch(
-                u_indices, exclude_sets, n=top_n,
+            ranking_batch = rank_items_for_users(
+                model,
+                user_ids=batch_users,
+                user_indices=u_indices,
+                exclude_sets=exclude_sets,
+                n_candidates=top_n,
                 max_candidates=max_candidates, min_item_ratings=min_item_ratings,
             )
-            for user, relevant, recommended in zip(
-                batch_users, [test_by_user[u] for u in batch_users], recs_batch
+            for user, relevant, ranking in zip(
+                batch_users, [test_by_user[u] for u in batch_users], ranking_batch
             ):
+                recommended = recommend_from_ranking(ranking, top_n=top_n).recommended_items
                 precisions.append(precision_at_k(recommended, relevant, top_n))
                 recalls.append(recall_at_k(recommended, relevant, top_n))
                 ndcgs.append(ndcg_at_k(recommended, relevant, top_n))
@@ -166,7 +173,15 @@ def evaluate_recommendations(model, train_data, test_data, top_n=10,
         for user in tqdm(users_eval, desc="  Top-N recommendations", unit=" users"):
             relevant = test_by_user[user]
             exclude = train_by_user[user]
-            recommended = model.recommend_top_n(user, n=top_n, exclude_items=exclude)
+            ranking = rank_items_for_user(
+                model,
+                user_id=user,
+                n_candidates=top_n,
+                exclude_items=exclude,
+                max_candidates=max_candidates,
+                min_item_ratings=min_item_ratings,
+            )
+            recommended = recommend_from_ranking(ranking, top_n=top_n).recommended_items
             precisions.append(precision_at_k(recommended, relevant, top_n))
             recalls.append(recall_at_k(recommended, relevant, top_n))
             ndcgs.append(ndcg_at_k(recommended, relevant, top_n))
@@ -226,16 +241,19 @@ def evaluate_recommendations_per_user(
                 {model.item_idx[iid] for iid in train_by_user[u] if iid in model.item_idx}
                 for u in batch_users
             ]
-            recs_batch = model.recommend_top_n_batch(
-                u_indices,
-                exclude_sets,
-                n=top_n,
+            ranking_batch = rank_items_for_users(
+                model,
+                user_ids=batch_users,
+                user_indices=u_indices,
+                exclude_sets=exclude_sets,
+                n_candidates=top_n,
                 max_candidates=max_candidates,
                 min_item_ratings=min_item_ratings,
             )
-            for user, relevant, recommended in zip(
-                batch_users, [test_by_user[u] for u in batch_users], recs_batch
+            for user, relevant, ranking in zip(
+                batch_users, [test_by_user[u] for u in batch_users], ranking_batch
             ):
+                recommended = recommend_from_ranking(ranking, top_n=top_n).recommended_items
                 p = precision_at_k(recommended, relevant, top_n)
                 r = recall_at_k(recommended, relevant, top_n)
                 n = ndcg_at_k(recommended, relevant, top_n)
@@ -252,7 +270,15 @@ def evaluate_recommendations_per_user(
         for user in users_eval:
             relevant = test_by_user[user]
             exclude = train_by_user[user]
-            recommended = model.recommend_top_n(user, n=top_n, exclude_items=exclude)
+            ranking = rank_items_for_user(
+                model,
+                user_id=user,
+                n_candidates=top_n,
+                exclude_items=exclude,
+                max_candidates=max_candidates,
+                min_item_ratings=min_item_ratings,
+            )
+            recommended = recommend_from_ranking(ranking, top_n=top_n).recommended_items
             p = precision_at_k(recommended, relevant, top_n)
             r = recall_at_k(recommended, relevant, top_n)
             n = ndcg_at_k(recommended, relevant, top_n)
