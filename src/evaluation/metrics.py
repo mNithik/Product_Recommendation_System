@@ -232,6 +232,30 @@ def evaluate_recommendations_per_user(
         users_eval = users_eval[:max_users]
 
     rows: list[dict] = []
+    all_candidate_items: set[str] = set()
+    item_interaction_counts = defaultdict(int)
+    for r in train_data:
+        item_interaction_counts[r["asin"]] += 1
+
+    max_item_popularity = max(item_interaction_counts.values(), default=1)
+
+    def _row_payload(user: str, recommended: list[str], p: float, r: float, n: float) -> dict:
+        hits = len(set(recommended[:top_n]) & set(test_by_user[user]))
+        recommended_counts = [item_interaction_counts.get(item_id, 0) for item_id in recommended[:top_n]]
+        avg_popularity = (
+            float(np.mean(recommended_counts)) / float(max_item_popularity)
+            if recommended_counts and max_item_popularity > 0 else 0.0
+        )
+        all_candidate_items.update(recommended[:top_n])
+        return {
+            "user": user,
+            "n_train": len(train_by_user[user]),
+            "precision": float(p),
+            "recall": float(r),
+            "ndcg": float(n),
+            "hit_rate": float(1.0 if hits > 0 else 0.0),
+            "avg_recommended_popularity": float(avg_popularity),
+        }
 
     if hasattr(model, "recommend_top_n_batch"):
         for i in range(0, len(users_eval), batch_size):
@@ -257,15 +281,7 @@ def evaluate_recommendations_per_user(
                 p = precision_at_k(recommended, relevant, top_n)
                 r = recall_at_k(recommended, relevant, top_n)
                 n = ndcg_at_k(recommended, relevant, top_n)
-                rows.append(
-                    {
-                        "user": user,
-                        "n_train": len(train_by_user[user]),
-                        "precision": float(p),
-                        "recall": float(r),
-                        "ndcg": float(n),
-                    }
-                )
+                rows.append(_row_payload(user, recommended, p, r, n))
     else:
         for user in users_eval:
             relevant = test_by_user[user]
@@ -282,13 +298,12 @@ def evaluate_recommendations_per_user(
             p = precision_at_k(recommended, relevant, top_n)
             r = recall_at_k(recommended, relevant, top_n)
             n = ndcg_at_k(recommended, relevant, top_n)
-            rows.append(
-                {
-                    "user": user,
-                    "n_train": len(train_by_user[user]),
-                    "precision": float(p),
-                    "recall": float(r),
-                    "ndcg": float(n),
-                }
-            )
+            rows.append(_row_payload(user, recommended, p, r, n))
+
+    catalog_coverage = (
+        float(len(all_candidate_items)) / float(len(item_interaction_counts))
+        if item_interaction_counts else 0.0
+    )
+    for row in rows:
+        row["catalog_coverage"] = catalog_coverage
     return rows
