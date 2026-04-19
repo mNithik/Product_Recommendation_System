@@ -379,6 +379,10 @@ with tab1:
         t3.metric("Total time", f"{total_elapsed:.2f}s")
         if enable_causal_adjustment:
             st.caption("Showing recommendations after optional causal-inspired score adjustment.")
+        st.caption(
+            "Pipeline view: base ranking -> optional causal adjustment -> final Top-N recommendation -> "
+            "post-hoc explanation -> counterfactual weakening."
+        )
 
         if text_sim_mode != "Off":
             st.info(
@@ -408,6 +412,34 @@ with tab1:
         if not recs:
             st.warning("No recommendations available for this user.")
         else:
+            with st.expander("Inspect ranked candidates and stage outputs"):
+                base_rows = [
+                    {
+                        "Base rank": row.rank,
+                        "Item": row.item_id,
+                        "Base score": row.score,
+                    }
+                    for row in ranking_result.items[: max(top_n + 3, 10)]
+                ]
+                st.markdown("**Base ranking**")
+                st.dataframe(pd.DataFrame(base_rows), use_container_width=True, hide_index=True)
+
+                if enable_causal_adjustment:
+                    adjusted_rows = [
+                        {
+                            "Adjusted rank": row.rank,
+                            "Item": row.item_id,
+                            "Adjusted score": round(float(row.score), 4) if row.score is not None else None,
+                            "Base rank": row.metadata.get("base_rank"),
+                            "Base score": row.metadata.get("base_score"),
+                            "Support boost": round(float(row.metadata.get("support_boost", 0.0)), 4),
+                            "Popularity penalty": round(float(row.metadata.get("popularity_penalty", 0.0)), 4),
+                        }
+                        for row in active_ranking_result.items[: max(top_n + 3, 10)]
+                    ]
+                    st.markdown("**Causal-adjusted ranking**")
+                    st.dataframe(pd.DataFrame(adjusted_rows), use_container_width=True, hide_index=True)
+
             for rank, item_id in enumerate(recs, 1):
                 stats = item_stats.get(item_id, {})
                 avg_r = stats.get("avg_rating", 0)

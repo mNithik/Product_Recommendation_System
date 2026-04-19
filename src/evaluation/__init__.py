@@ -1,16 +1,15 @@
-from .metrics import (
-    mae,
-    rmse,
+from .rating import mae, rmse, evaluate_rating_prediction
+from .recommendation import (
     precision_at_k,
     recall_at_k,
     f_measure,
     dcg_at_k,
     ndcg_at_k,
-    evaluate_rating_prediction,
     evaluate_recommendations,
     evaluate_recommendations_per_user,
     compute_candidate_hit_rate,
 )
+from .explanation import evaluate_counterfactuals, evaluate_explanations
 from .late_fusion import (
     cf_position_scores,
     rank_items_late_fusion,
@@ -22,3 +21,26 @@ from .fairness import (
     disparity_ratios_by_metric,
     summarize_ndcg_by_train_activity,
 )
+
+__all__ = [
+    "mae",
+    "rmse",
+    "precision_at_k",
+    "recall_at_k",
+    "f_measure",
+    "dcg_at_k",
+    "ndcg_at_k",
+    "evaluate_rating_prediction",
+    "evaluate_recommendations",
+    "evaluate_recommendations_per_user",
+    "compute_candidate_hit_rate",
+    "evaluate_explanations",
+    "evaluate_counterfactuals",
+    "cf_position_scores",
+    "rank_items_late_fusion",
+    "evaluate_late_fusion_recommendations",
+    "disparity_ratio",
+    "disparity_max_min_ratio",
+    "disparity_ratios_by_metric",
+    "summarize_ndcg_by_train_activity",
+]
