@@ -34,7 +34,8 @@ venv/
 .DS_Store
 Thumbs.db
 
-# LaTeX build outputs (keep report/*.tex in version control)
+# Project report (LaTeX source and build products stay local only)
+report/*.tex
 report/*.aux
 report/*.log
 report/*.out
