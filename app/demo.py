@@ -19,7 +19,10 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.explainability import ItemSimilarityIndex, explain_recommendation
+from src.explainability.counterfactual import build_counterfactual_explanation
 from src.evaluation.late_fusion import evaluate_late_fusion_recommendations, rank_items_late_fusion
+from src.pipeline import rank_items_for_user
+from src.postprocessing import CausalAdjustmentConfig, apply_causal_adjustment
 from src.trustworthiness.text_profiles import ReviewTextProfileIndex
 from src.utils.data_loader import load_data
 
@@ -252,6 +255,9 @@ model_choice = st.sidebar.selectbox("Recommendation Model", MODEL_OPTIONS)
 
 top_n = st.sidebar.slider("Number of recommendations", 5, 50, 10)
 show_explanations = st.sidebar.checkbox("Show explanations", value=True)
+enable_causal_adjustment = st.sidebar.checkbox("Enable causal adjustment", value=False)
+causal_support_weight = st.sidebar.slider("Causal support weight", 0.0, 0.5, 0.20, 0.05)
+causal_popularity_penalty = st.sidebar.slider("Causal popularity penalty", 0.0, 0.5, 0.10, 0.05)
 text_sim_mode = st.sidebar.radio(
     "Review-text similarity (optional)",
     ("Off", "TF-IDF", "Sentence-BERT (MiniLM)"),
@@ -343,7 +349,27 @@ with tab1:
             fit_elapsed = time.perf_counter() - fit_start
         exclude = {e["item"] for e in history}
         rec_start = time.perf_counter()
-        recs = model.recommend_top_n(user_id, n=top_n, exclude_items=exclude)
+        ranking_result = rank_items_for_user(
+            model,
+            user_id=user_id,
+            n_candidates=max(top_n + 1, top_n),
+            exclude_items=exclude,
+        )
+        explanations_by_item = {
+            row.item_id: explain_recommendation(explanation_index, user_id, row.item_id)
+            for row in ranking_result.items
+        }
+        active_ranking_result = apply_causal_adjustment(
+            ranking_result,
+            explanations_by_item,
+            item_popularity={item_id: stats["count"] for item_id, stats in item_stats.items()},
+            config=CausalAdjustmentConfig(
+                enabled=enable_causal_adjustment,
+                support_weight=causal_support_weight,
+                popularity_penalty_weight=causal_popularity_penalty,
+            ),
+        )
+        recs = [row.item_id for row in active_ranking_result.items[:top_n]]
         rec_elapsed = time.perf_counter() - rec_start
         total_elapsed = fit_elapsed + rec_elapsed
 
@@ -351,6 +377,8 @@ with tab1:
         t1.metric("Model fit/load time", f"{fit_elapsed:.2f}s")
         t2.metric("Recommendation time", f"{rec_elapsed:.2f}s")
         t3.metric("Total time", f"{total_elapsed:.2f}s")
+        if enable_causal_adjustment:
+            st.caption("Showing recommendations after optional causal-inspired score adjustment.")
 
         if text_sim_mode != "Off":
             st.info(
@@ -393,11 +421,20 @@ with tab1:
                 """, unsafe_allow_html=True)
 
                 if show_explanations:
-                    explanation = explain_recommendation(explanation_index, user_id, item_id)
+                    explanation = explanations_by_item[item_id]
                     st.markdown(
                         f'<div class="explain-box"><b>Why this item:</b> {explanation.explanation_text}</div>',
                         unsafe_allow_html=True,
                     )
+                    active_row = next(row for row in active_ranking_result.items if row.item_id == item_id)
+                    if enable_causal_adjustment:
+                        base_score = active_row.metadata.get("base_score")
+                        adjusted_score = active_row.metadata.get("adjusted_score")
+                        st.markdown(
+                            f'<div class="explain-box"><b>Base score:</b> {base_score if base_score is not None else "N/A"}'
+                            f' &nbsp;|&nbsp; <b>Adjusted score:</b> {adjusted_score:.4f}</div>',
+                            unsafe_allow_html=True,
+                        )
                     st.markdown(
                         f'<div class="explain-box"><b>Support confidence:</b> {explanation.support_confidence:.3f}'
                         f' &nbsp;|&nbsp; <b>Type:</b> {explanation.explanation_type}</div>',
@@ -419,6 +456,21 @@ with tab1:
                         )
                         st.markdown(
                             f'<div class="explain-box"><b>Supporting similar items:</b> {similar_text}</div>',
+                            unsafe_allow_html=True,
+                        )
+                    counterfactual = build_counterfactual_explanation(explanation, active_ranking_result)
+                    st.markdown(
+                        f'<div class="explain-box"><b>Counterfactual weakening:</b> '
+                        f'{counterfactual.minimal_change_text}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    if counterfactual.weakening_actions:
+                        cf_text = ", ".join(
+                            f"{row.item_id} (impact={row.estimated_impact:.2f})"
+                            for row in counterfactual.weakening_actions
+                        )
+                        st.markdown(
+                            f'<div class="explain-box"><b>Weakening candidates:</b> {cf_text}</div>',
                             unsafe_allow_html=True,
                         )
                     if text_idx is not None:
