@@ -58,3 +58,25 @@ def test_causal_adjustment_updates_scores_and_can_change_order():
     assert adjusted.metadata["causal_adjustment_enabled"] is True
     assert adjusted.items[0].item_id == "B"
     assert adjusted.items[0].metadata["adjusted_score"] >= adjusted.items[1].metadata["adjusted_score"]
+    assert adjusted.items[0].metadata["used_score_fallback"] is False
+
+
+def test_causal_adjustment_marks_rank_fallback_when_raw_score_missing():
+    ranking = RankingResult(
+        user_id="U1",
+        items=[
+            RankedItem(item_id="A", rank=1, score=None),
+            RankedItem(item_id="B", rank=2, score=None),
+        ],
+    )
+    explanations = {"A": _explanation("A", 0.4), "B": _explanation("B", 0.2)}
+
+    adjusted = apply_causal_adjustment(
+        ranking,
+        explanations,
+        item_popularity={"A": 5, "B": 2},
+        config=CausalAdjustmentConfig(enabled=True),
+    )
+
+    assert adjusted.items[0].metadata["used_score_fallback"] is True
+    assert adjusted.items[0].metadata["effective_base_score_source"] == "rank_fallback"

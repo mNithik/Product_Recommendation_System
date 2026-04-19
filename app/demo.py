@@ -30,8 +30,8 @@ from src.utils.data_loader import load_data
 # Page config
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Product Recommender — Arts, Crafts & Sewing",
-    page_icon="🎨",
+    page_title="Product Recommender - Arts, Crafts & Sewing",
+    page_icon="PC",
     layout="wide",
 )
 
@@ -106,6 +106,61 @@ def build_user_item_maps(train_data_json: str):
         s["avg_rating"] = s["sum"] / s["count"]
 
     return dict(user_items), dict(item_stats)
+
+
+@st.cache_data(show_spinner="Loading display metadata...")
+def build_display_metadata():
+    meta_file = Path("AMAZON_FASHION_5.json") / "meta_Arts_Crafts_and_Sewing.json"
+    raw_dir = Path("Arts_Crafts_and_Sewing_5.json")
+    raw_file = next(raw_dir.glob("*.json"), None) if raw_dir.exists() else None
+    user_names: dict[str, str] = {}
+    item_titles: dict[str, str] = {}
+
+    if meta_file.exists():
+        with meta_file.open("r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                item_id = row.get("asin")
+                title = (row.get("title") or "").strip()
+                brand = (row.get("brand") or "").strip()
+                if item_id and title and item_id not in item_titles:
+                    if brand and brand.lower() not in title.lower():
+                        item_titles[item_id] = f"{title} - {brand}"
+                    else:
+                        item_titles[item_id] = title
+
+    if raw_file is not None:
+        with raw_file.open("r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                user_id = row.get("reviewerID")
+                reviewer_name = (row.get("reviewerName") or "").strip()
+                if user_id and reviewer_name and user_id not in user_names:
+                    user_names[user_id] = reviewer_name
+
+                item_id = row.get("asin")
+                summary = (row.get("summary") or "").strip()
+                if item_id and summary and item_id not in item_titles:
+                    item_titles[item_id] = summary[:80]
+    return user_names, item_titles
+
+
+def user_label(user_id: str, user_names: dict[str, str]) -> str:
+    reviewer_name = user_names.get(user_id)
+    if reviewer_name:
+        return f"{reviewer_name} ({user_id})"
+    return user_id
+
+
+def item_label(item_id: str, item_titles: dict[str, str]) -> str:
+    title = item_titles.get(item_id)
+    if title:
+        return f"{title} [{item_id}]"
+    return f"Arts, Crafts & Sewing item [{item_id}]"
 
 
 @st.cache_resource(show_spinner="Building explanation index...")
@@ -278,6 +333,7 @@ st.sidebar.caption("Built for CS550 — Massive Data Mining")
 train_data, test_data = load_train_test(train_path, test_path)
 train_json = json.dumps(train_data)
 user_items, item_stats = build_user_item_maps(train_json)
+user_names, item_hints = build_display_metadata()
 explanation_index = build_explanation_index(train_path)
 
 all_users = sorted(user_items.keys())
@@ -286,8 +342,8 @@ all_items = sorted(item_stats.keys())
 # ---------------------------------------------------------------------------
 # Main content
 # ---------------------------------------------------------------------------
-st.title("🎨 Product Recommendation System")
-st.caption("Amazon Arts, Crafts & Sewing — Collaborative Filtering Demo")
+st.title("Product Recommendation System")
+st.caption("Amazon Arts, Crafts & Sewing - Collaborative Filtering Demo")
 
 col1, col2, col3, col4 = st.columns(4)
 with col1:
@@ -307,11 +363,11 @@ with col4:
 st.divider()
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "🎯 Recommend for User",
-    "📊 Model Comparison",
-    "🔥 Popular Items",
-    "📈 Dataset Explorer",
-    "🛡️ Fairness audit",
+    "Recommend for User",
+    "Model Comparison",
+    "Popular Items",
+    "Dataset Explorer",
+    "Fairness audit",
 ])
 
 # ---- Tab 1: User Recommendations ----
@@ -323,6 +379,7 @@ with tab1:
         user_id = st.selectbox(
             "User ID",
             all_users,
+            format_func=lambda uid: user_label(uid, user_names),
             index=0,
             help="Pick a user from the training set",
         )
@@ -336,8 +393,8 @@ with tab1:
         st.subheader("Rating history")
         sorted_hist = sorted(history, key=lambda x: -x["rating"])[:15]
         for entry in sorted_hist:
-            stars = "⭐" * int(entry["rating"])
-            st.text(f"{entry['item']}  {stars}")
+            stars = "*" * int(entry["rating"])
+            st.text(f"{item_label(entry['item'], item_hints)}  {stars}")
 
     with col_results:
         st.subheader(f"Top-{top_n} Recommendations")
@@ -390,7 +447,7 @@ with tab1:
                 + model_choice
                 + "** (rating / implicit-feedback patterns). "
                 "**Text similarity** (TF-IDF or Sentence-BERT) is **post-hoc** "
-                "— it scores overlap between the user's past reviews and each item's reviews "
+                "- it scores overlap between the user's past reviews and each item's reviews "
                 "(stars, verified, style, summary, review body when present). The ranked cards above stay **pure CF**; "
                 "an optional **late fusion** table below blends CF pool order with text similarity for comparison only."
             )
@@ -416,7 +473,7 @@ with tab1:
                 base_rows = [
                     {
                         "Base rank": row.rank,
-                        "Item": row.item_id,
+                        "Item": item_label(row.item_id, item_hints),
                         "Base score": row.score,
                     }
                     for row in ranking_result.items[: max(top_n + 3, 10)]
@@ -428,10 +485,11 @@ with tab1:
                     adjusted_rows = [
                         {
                             "Adjusted rank": row.rank,
-                            "Item": row.item_id,
+                            "Item": item_label(row.item_id, item_hints),
                             "Adjusted score": round(float(row.score), 4) if row.score is not None else None,
                             "Base rank": row.metadata.get("base_rank"),
-                            "Base score": row.metadata.get("base_score"),
+                            "Raw model score": row.metadata.get("raw_model_score"),
+                            "Effective base score": row.metadata.get("effective_base_score"),
                             "Support boost": round(float(row.metadata.get("support_boost", 0.0)), 4),
                             "Popularity penalty": round(float(row.metadata.get("popularity_penalty", 0.0)), 4),
                         }
@@ -447,7 +505,7 @@ with tab1:
 
                 st.markdown(f"""
                 <div class="rec-card">
-                    <h4>#{rank} — {item_id}</h4>
+                    <h4>#{rank} - {item_label(item_id, item_hints)}</h4>
                     <p>Avg rating: {'⭐' * round(avg_r)} ({avg_r:.2f}) &nbsp;|&nbsp; {n_ratings} ratings</p>
                 </div>
                 """, unsafe_allow_html=True)
@@ -460,11 +518,26 @@ with tab1:
                     )
                     active_row = next(row for row in active_ranking_result.items if row.item_id == item_id)
                     if enable_causal_adjustment:
-                        base_score = active_row.metadata.get("base_score")
+                        raw_model_score = active_row.metadata.get("raw_model_score")
+                        effective_base_score = active_row.metadata.get("effective_base_score")
+                        effective_base_score_source = active_row.metadata.get("effective_base_score_source", "unknown")
+                        used_score_fallback = active_row.metadata.get("used_score_fallback", False)
                         adjusted_score = active_row.metadata.get("adjusted_score")
+                        effective_base_score_text = (
+                            f"{effective_base_score:.4f}"
+                            if effective_base_score is not None else "Unavailable"
+                        )
+                        adjusted_score_text = (
+                            f"{adjusted_score:.4f}"
+                            if adjusted_score is not None else "Unavailable"
+                        )
                         st.markdown(
-                            f'<div class="explain-box"><b>Base score:</b> {base_score if base_score is not None else "N/A"}'
-                            f' &nbsp;|&nbsp; <b>Adjusted score:</b> {adjusted_score:.4f}</div>',
+                            f'<div class="explain-box"><b>Raw model score:</b> '
+                            f'{raw_model_score if raw_model_score is not None else "Unavailable"}'
+                            f' &nbsp;|&nbsp; <b>Effective base score:</b> {effective_base_score_text}'
+                            f' &nbsp;|&nbsp; <b>Base score source:</b> {effective_base_score_source}'
+                            f' &nbsp;|&nbsp; <b>Fallback used:</b> {"Yes" if used_score_fallback else "No"}'
+                            f' &nbsp;|&nbsp; <b>Adjusted score:</b> {adjusted_score_text}</div>',
                             unsafe_allow_html=True,
                         )
                     st.markdown(

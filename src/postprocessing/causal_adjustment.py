@@ -29,6 +29,11 @@ def _base_score(item: RankedItem) -> float:
     return float(-item.rank)
 
 
+def _used_fallback_score(item: RankedItem) -> bool:
+    """Whether the effective base score had to fall back to inverse rank."""
+    return item.score is None
+
+
 def _normalized_popularity(item_id: str, item_popularity: dict[str, int] | None) -> float:
     if not item_popularity:
         return 0.0
@@ -71,7 +76,12 @@ def apply_causal_adjustment(
                 score=adjusted_score,
                 metadata={
                     **row.metadata,
-                    "base_score": row.score,
+                    "raw_model_score": row.score,
+                    "effective_base_score": base,
+                    "effective_base_score_source": (
+                        "raw_model_score" if not _used_fallback_score(row) else "rank_fallback"
+                    ),
+                    "used_score_fallback": _used_fallback_score(row),
                     "base_rank": row.rank,
                     "support_confidence": support_confidence,
                     "support_boost": support_boost,
