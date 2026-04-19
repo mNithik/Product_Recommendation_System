@@ -18,6 +18,8 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.evaluation.late_fusion import evaluate_late_fusion_recommendations, rank_items_late_fusion
+from src.trustworthiness.text_profiles import ReviewTextProfileIndex
 from src.utils.data_loader import load_data
 
 # ---------------------------------------------------------------------------
@@ -142,6 +144,57 @@ def fit_model(train_path: str, model_type: str):
     return model
 
 
+@st.cache_data(show_spinner="Indexing review text (TF-IDF)…")
+def build_review_text_index(train_path: str):
+    """TF-IDF index over optional star rating, verified, style, summary, and reviewText; None if too little text."""
+    train = load_data(train_path)
+    try:
+        return ReviewTextProfileIndex(train, max_features=3500, min_df=3)
+    except ValueError:
+        return None
+
+
+@st.cache_resource(show_spinner="Building Sentence-BERT index (first run can take a few minutes)…")
+def build_sentence_embedding_index(train_path: str):
+    """MiniLM embeddings over aggregated metadata + summary + reviewText per item; GPU if available."""
+    from src.trustworthiness.sentence_embeddings import SentenceReviewProfileIndex
+
+    train = load_data(train_path)
+    return SentenceReviewProfileIndex(train)
+
+
+@st.cache_data(show_spinner="Fairness audit (per-user metrics)…")
+def run_user_activity_fairness_audit(
+    train_path: str,
+    test_path: str,
+    model_type: str,
+    max_users: int,
+    relevance_threshold: float,
+    n_buckets: int = 4,
+):
+    """Per-user Top-10 metrics, then bucket aggregates by training-set activity."""
+    from src.evaluation.fairness import disparity_ratios_by_metric, summarize_ndcg_by_train_activity
+    from src.evaluation.metrics import evaluate_recommendations_per_user
+
+    train, test = load_train_test(train_path, test_path)
+    model = fit_model(train_path, model_type)
+    rows = evaluate_recommendations_per_user(
+        model,
+        train,
+        test,
+        top_n=10,
+        batch_size=256,
+        min_train_ratings=5,
+        max_candidates=100000,
+        relevance_threshold=relevance_threshold,
+        min_item_ratings=0,
+        max_users=max_users,
+    )
+    summary = summarize_ndcg_by_train_activity(rows, n_buckets=n_buckets)
+    ratios = disparity_ratios_by_metric(rows, n_buckets=n_buckets)
+    return rows, summary, ratios
+
+
 @st.cache_data
 def load_experiment_results():
     """Load the latest experiment JSON for the results tab."""
@@ -223,6 +276,16 @@ model_choice = st.sidebar.selectbox("Recommendation Model", MODEL_OPTIONS)
 
 top_n = st.sidebar.slider("Number of recommendations", 5, 50, 10)
 show_explanations = st.sidebar.checkbox("Show explanations", value=True)
+text_sim_mode = st.sidebar.radio(
+    "Review-text similarity (optional)",
+    ("Off", "TF-IDF", "Sentence-BERT (MiniLM)"),
+    index=0,
+    help=(
+        "Does not change recommendations. The selected recommender uses ratings only; "
+        "TF-IDF / Sentence-BERT add post-hoc context from each review's star rating, verified flag, "
+        "product style fields (when present), summary title, and review body (explainability)."
+    ),
+)
 
 st.sidebar.divider()
 st.sidebar.caption("Built for CS550 — Massive Data Mining")
@@ -260,11 +323,12 @@ with col4:
 
 st.divider()
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🎯 Recommend for User",
     "📊 Model Comparison",
     "🔥 Popular Items",
     "📈 Dataset Explorer",
+    "🛡️ Fairness audit",
 ])
 
 # ---- Tab 1: User Recommendations ----
@@ -311,6 +375,31 @@ with tab1:
         t2.metric("Recommendation time", f"{rec_elapsed:.2f}s")
         t3.metric("Total time", f"{total_elapsed:.2f}s")
 
+        if text_sim_mode != "Off":
+            st.info(
+                "**Recommendations** come only from **"
+                + model_choice
+                + "** (rating / implicit-feedback patterns). "
+                "**Text similarity** (TF-IDF or Sentence-BERT) is **post-hoc** "
+                "— it scores overlap between the user's past reviews and each item's reviews "
+                "(stars, verified, style, summary, review body when present). The ranked cards above stay **pure CF**; "
+                "an optional **late fusion** table below blends CF pool order with text similarity for comparison only."
+            )
+
+        text_idx = None
+        sent_idx = None
+        if text_sim_mode == "TF-IDF":
+            text_idx = build_review_text_index(train_path)
+            if text_idx is None:
+                st.caption("Not enough text (metadata, summary, and/or review body) in this split to build a TF-IDF index.")
+        elif text_sim_mode == "Sentence-BERT (MiniLM)":
+            try:
+                sent_idx = build_sentence_embedding_index(train_path)
+            except ImportError as e:
+                st.warning(str(e))
+            except Exception as e:
+                st.warning(f"Sentence-BERT index failed: {e}")
+
         if not recs:
             st.warning("No recommendations available for this user.")
         else:
@@ -330,6 +419,132 @@ with tab1:
                     explanation = find_explanation(user_id, item_id, user_items, item_stats)
                     st.markdown(f'<div class="explain-box">💡 {explanation}</div>',
                                 unsafe_allow_html=True)
+                    if text_idx is not None:
+                        sim = text_idx.cosine_user_item(train_data, user_id, item_id)
+                        st.markdown(
+                            f'<div class="explain-box">📎 <b>TF-IDF similarity:</b> {sim:.3f}</div>',
+                            unsafe_allow_html=True,
+                        )
+                    if sent_idx is not None:
+                        sim = sent_idx.cosine_user_item(train_data, user_id, item_id)
+                        st.markdown(
+                            f'<div class="explain-box">📎 <b>Sentence-BERT similarity:</b> {sim:.3f}</div>',
+                            unsafe_allow_html=True,
+                        )
+
+            text_index_fusion = sent_idx if sent_idx is not None else text_idx
+            if text_index_fusion is not None:
+                st.subheader("Late fusion ranking (separate from CF list above)")
+                st.caption(
+                    "Builds a larger candidate pool from the **same model**, then re-sorts by "
+                    "α×(collaborative position in pool) + (1−α)×(text similarity). "
+                    "Does not change training or the primary Top-N cards."
+                )
+                fc1, fc2 = st.columns(2)
+                with fc1:
+                    fusion_alpha = st.slider(
+                        "α (CF weight)",
+                        0.0,
+                        1.0,
+                        0.65,
+                        0.05,
+                        key="fusion_alpha",
+                        help="1 = keep model pool order; 0 = sort by text only (within pool).",
+                    )
+                with fc2:
+                    fusion_pool = st.slider(
+                        "Candidate pool size",
+                        max(top_n, 15),
+                        min(200, max(50, top_n * 5)),
+                        min(100, max(top_n * 4, 40)),
+                        5,
+                        key="fusion_pool",
+                        help="Number of CF-ranked items to pull before re-ranking with text.",
+                    )
+                pool_n = max(int(fusion_pool), int(top_n))
+                pool = model.recommend_top_n(user_id, n=pool_n, exclude_items=exclude)
+                fused_rows = rank_items_late_fusion(
+                    pool,
+                    train_data,
+                    user_id,
+                    text_index_fusion.cosine_user_item,
+                    fusion_alpha,
+                )[:top_n]
+                pool_rank = {asin: i + 1 for i, asin in enumerate(pool)}
+                df_f = pd.DataFrame(
+                    [
+                        {
+                            "Fusion rank": i + 1,
+                            "Item": asin,
+                            "CF rank in pool": pool_rank.get(asin, "—"),
+                            "CF norm": round(cf, 3),
+                            "Text sim": round(tx, 3),
+                            "Fused": round(fu, 3),
+                        }
+                        for i, (asin, fu, cf, tx) in enumerate(fused_rows)
+                    ]
+                )
+                st.dataframe(df_f, use_container_width=True, hide_index=True)
+
+                with st.expander("Offline evaluation — late fusion vs. held-out test (sample)"):
+                    st.markdown(
+                        "Runs the **same** Precision/Recall/NDCG@N protocol as the main pipeline, "
+                        "but recommendations are built with late fusion. Uses the **test split** "
+                        "for this dataset choice; can take a minute."
+                    )
+                    ev_max_u = st.slider("Max users to evaluate", 50, 2500, 400, 50, key="fusion_ev_users")
+                    if st.button("Run late fusion evaluation", key="fusion_ev_run"):
+                        with st.spinner("Evaluating late fusion…"):
+                            m = evaluate_late_fusion_recommendations(
+                                model,
+                                train_data,
+                                test_data,
+                                text_index_fusion,
+                                alpha=float(fusion_alpha),
+                                top_n=int(top_n),
+                                pool_size=int(pool_n),
+                                min_train_ratings=5,
+                                relevance_threshold=4.0,
+                                max_users=int(ev_max_u),
+                            )
+                        st.metric("Users evaluated", m["n_users_eval"])
+                        c1, c2, c3, c4 = st.columns(4)
+                        c1.metric("P@N", f"{m['Precision']:.4f}")
+                        c2.metric("R@N", f"{m['Recall']:.4f}")
+                        c3.metric("F1", f"{m['F-measure']:.4f}")
+                        c4.metric("NDCG@N", f"{m['NDCG']:.4f}")
+                        st.caption(
+                            f"Settings: α={m['alpha']}, pool={m['pool_size']}, N={top_n}. "
+                            "Compare to CF-only metrics from `python main.py` for the same model."
+                        )
+
+            if hasattr(model, "recommend_top_n_profile_ablation"):
+                with st.expander("Counterfactual — remove items from your profile (Implicit ALS)"):
+                    st.markdown(
+                        "Same trained model; selected items are **removed from the user vector** "
+                        "passed to scoring at recommendation time (no refit)."
+                    )
+                    hist_items = [e["item"] for e in history]
+                    drop_cf = st.multiselect(
+                        "Items to remove from profile",
+                        hist_items,
+                        max_selections=6,
+                        key="cf_drop_items",
+                    )
+                    if st.button("Recompute Top-N with ablated profile", key="cf_run"):
+                        if not drop_cf:
+                            st.info("Select at least one rated item to remove.")
+                        else:
+                            rec_cf = model.recommend_top_n_profile_ablation(
+                                user_id, n=top_n, drop_asins=set(drop_cf)
+                            )
+                            st.write("**Ablated Top-N:**", ", ".join(rec_cf) if rec_cf else "(empty)")
+                            lost = [x for x in recs if x not in rec_cf]
+                            gained = [x for x in rec_cf if x not in recs]
+                            if lost or gained:
+                                st.caption(f"Removed from list: {lost}  ·  New in list: {gained}")
+                            else:
+                                st.caption("List unchanged for this ablation (ties or robust ranking).")
 
 # ---- Tab 2: Model Comparison ----
 with tab2:
@@ -449,3 +664,85 @@ with tab4:
         pd.DataFrame(sample)[["reviewerID", "asin", "overall"]],
         use_container_width=True,
     )
+
+# ---- Tab 5: Fairness audit (NDCG by training-activity buckets) ----
+with tab5:
+    st.subheader("Fairness audit")
+    st.caption(
+        "Per-user Top-10 metrics, then aggregates by training-set activity (quantile buckets). "
+        "Disparity ratios compare the best vs. worst bucket **mean** (positive values only) for each metric."
+    )
+
+    st.markdown("#### Settings")
+    fair_model = st.selectbox(
+        "Model for fairness audit",
+        MODEL_OPTIONS,
+        index=0,
+        help="Uses the same Top-10 protocol as the main pipeline (slower for large max users).",
+        key="fair_model",
+    )
+    max_users_f = st.slider("Max users to evaluate (fairness audit)", 200, 8000, 1500, step=100, key="fair_max_u")
+    rel_thr = st.slider("Relevance threshold (test items ≥ this rating)", 3.0, 5.0, 4.0, step=0.5, key="fair_rel")
+    fair_buckets = st.slider(
+        "Number of activity buckets (quantiles)",
+        2,
+        12,
+        4,
+        1,
+        key="fair_n_buckets",
+        help="More buckets = finer train-count slices (qcut; fewer if duplicates drop).",
+    )
+
+    if st.button("Run fairness audit", key="fair_run"):
+        with st.spinner("Computing per-user metrics…"):
+            rows, summary, ratios = run_user_activity_fairness_audit(
+                train_path, test_path, fair_model, max_users_f, rel_thr, n_buckets=int(fair_buckets)
+            )
+        st.metric("Users evaluated", len(rows))
+        c1, c2, c3 = st.columns(3)
+        c1.metric(
+            "NDCG disparity (max/min bucket mean)",
+            f"{ratios['ndcg']:.2f}x" if ratios["ndcg"] == ratios["ndcg"] else "—",
+        )
+        c2.metric(
+            "Precision disparity",
+            f"{ratios['precision']:.2f}x" if ratios["precision"] == ratios["precision"] else "—",
+        )
+        c3.metric(
+            "Recall disparity",
+            f"{ratios['recall']:.2f}x" if ratios["recall"] == ratios["recall"] else "—",
+        )
+
+        st.markdown("##### Bucket summary (mean ± dispersion)")
+        st.dataframe(summary, use_container_width=True, hide_index=True)
+
+        csv_summary = summary.to_csv(index=False).encode("utf-8")
+        csv_users = pd.DataFrame(rows).to_csv(index=False).encode("utf-8")
+        d1, d2 = st.columns(2)
+        with d1:
+            st.download_button(
+                "Download bucket summary (CSV)",
+                data=csv_summary,
+                file_name="fairness_activity_buckets.csv",
+                mime="text/csv",
+                key="fair_dl_summary",
+            )
+        with d2:
+            st.download_button(
+                "Download per-user metrics (CSV)",
+                data=csv_users,
+                file_name="fairness_per_user_metrics.csv",
+                mime="text/csv",
+                key="fair_dl_users",
+            )
+
+        plot_df = summary.copy()
+        plot_df["activity_bucket"] = plot_df["bucket"].astype(str)
+        st.markdown("##### Mean NDCG by bucket")
+        st.bar_chart(plot_df.set_index("activity_bucket")["mean_ndcg"])
+        st.markdown("##### Mean Precision by bucket")
+        st.bar_chart(plot_df.set_index("activity_bucket")["mean_precision"])
+        st.caption(
+            "Bucket table includes **std** and **median** per metric. "
+            "High disparity ratios flag uneven quality across activity groups (audit only; no re-ranking)."
+        )

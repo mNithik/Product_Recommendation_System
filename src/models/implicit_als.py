@@ -1,5 +1,7 @@
 """Implicit ALS (Hu-Koren-Volinsky) — weighted matrix factorization for implicit feedback."""
 
+from __future__ import annotations
+
 import logging
 
 import numpy as np
@@ -76,6 +78,40 @@ class ImplicitALSRanker:
         u = self.user_idx[user_id]
         ids, _ = self.model.recommend(
             u, self.all_user_items_csr[u], N=n, filter_already_liked_items=True,
+        )
+        return [self.rev_item[i] for i in ids]
+
+    def recommend_top_n_profile_ablation(
+        self, user_id: str, n: int = 10, drop_asins: set[str] | None = None
+    ) -> list[str]:
+        """
+        Inference-time counterfactual: same trained model, but remove ``drop_asins``
+        from the user's *observed interaction profile* passed to ``implicit`` scoring.
+
+        This is a practical analogue to ``what if the user had not interacted with
+        these items?'' (weights fixed; only the user-item history vector changes).
+        """
+        from scipy.sparse import csr_matrix
+
+        if user_id not in self.user_idx:
+            return []
+        if not drop_asins:
+            return self.recommend_top_n(user_id, n=n)
+
+        u = self.user_idx[user_id]
+        row = self.all_user_items_csr.getrow(u)
+        cols = row.indices.tolist()
+        data = row.data.tolist()
+        drop_idx = {self.item_idx[a] for a in drop_asins if a in self.item_idx}
+        new_cols = [c for c in cols if c not in drop_idx]
+        new_data = [data[j] for j, c in enumerate(cols) if c not in drop_idx]
+        if not new_cols:
+            return []
+        new_row = csr_matrix(
+            (new_data, ([0] * len(new_cols), new_cols)), shape=(1, row.shape[1])
+        )
+        ids, _ = self.model.recommend(
+            u, new_row, N=n, filter_already_liked_items=True
         )
         return [self.rev_item[i] for i in ids]
 

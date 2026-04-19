@@ -54,13 +54,18 @@ def run_preprocessing(raw_path: str, train_path: str, test_path: str,
     reviews_by_user = defaultdict(list)
 
     for user_id, item_id, rating, record in tqdm(load_reviews(raw_path), desc="Loading"):
-        reviews_by_user[user_id].append({
+        row = {
             "reviewerID": user_id,
             "asin": item_id,
             "overall": rating,
             "reviewText": record.get("reviewText", ""),
             "summary": record.get("summary", ""),
-        })
+        }
+        if "verified" in record and record["verified"] is not None:
+            row["verified"] = record["verified"]
+        if record.get("style"):
+            row["style"] = record["style"]
+        reviews_by_user[user_id].append(row)
 
     total = sum(len(v) for v in reviews_by_user.values())
     logger.info("Loaded %d reviews from %d users", total, len(reviews_by_user))

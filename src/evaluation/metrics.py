@@ -180,3 +180,89 @@ def evaluate_recommendations(model, train_data, test_data, top_n=10,
         "NDCG": float(np.mean(ndcgs)) if ndcgs else 0,
         "n_users_eval": len(users_eval),
     }
+
+
+def evaluate_recommendations_per_user(
+    model,
+    train_data,
+    test_data,
+    top_n: int = 10,
+    batch_size: int = 512,
+    min_train_ratings: int = 5,
+    max_candidates: int = 10000,
+    relevance_threshold=None,
+    min_item_ratings: int = 0,
+    max_users: int | None = None,
+) -> list[dict]:
+    """
+    Same protocol as evaluate_recommendations, but return one record per user
+    (for fairness / disparity analysis by activity).
+    """
+    test_by_user = defaultdict(list)
+    for r in test_data:
+        if relevance_threshold is None or float(r["overall"]) >= float(relevance_threshold):
+            test_by_user[r["reviewerID"]].append(r["asin"])
+    train_by_user = defaultdict(set)
+    for r in train_data:
+        train_by_user[r["reviewerID"]].add(r["asin"])
+
+    users_eval = [
+        u
+        for u in test_by_user
+        if u in model.user_idx
+        and test_by_user[u]
+        and len(train_by_user[u]) >= min_train_ratings
+    ]
+    if max_users is not None and max_users > 0:
+        users_eval = users_eval[:max_users]
+
+    rows: list[dict] = []
+
+    if hasattr(model, "recommend_top_n_batch"):
+        for i in range(0, len(users_eval), batch_size):
+            batch_users = users_eval[i : i + batch_size]
+            u_indices = [model.user_idx[u] for u in batch_users]
+            exclude_sets = [
+                {model.item_idx[iid] for iid in train_by_user[u] if iid in model.item_idx}
+                for u in batch_users
+            ]
+            recs_batch = model.recommend_top_n_batch(
+                u_indices,
+                exclude_sets,
+                n=top_n,
+                max_candidates=max_candidates,
+                min_item_ratings=min_item_ratings,
+            )
+            for user, relevant, recommended in zip(
+                batch_users, [test_by_user[u] for u in batch_users], recs_batch
+            ):
+                p = precision_at_k(recommended, relevant, top_n)
+                r = recall_at_k(recommended, relevant, top_n)
+                n = ndcg_at_k(recommended, relevant, top_n)
+                rows.append(
+                    {
+                        "user": user,
+                        "n_train": len(train_by_user[user]),
+                        "precision": float(p),
+                        "recall": float(r),
+                        "ndcg": float(n),
+                    }
+                )
+    else:
+        for user in users_eval:
+            relevant = test_by_user[user]
+            exclude = train_by_user[user]
+            recommended = model.recommend_top_n(user, n=top_n, exclude_items=exclude)
+            p = precision_at_k(recommended, relevant, top_n)
+            r = recall_at_k(recommended, relevant, top_n)
+            n = ndcg_at_k(recommended, relevant, top_n)
+            rows.append(
+                {
+                    "user": user,
+                    "n_train": len(train_by_user[user]),
+                    "precision": float(p),
+                    "recall": float(r),
+                    "ndcg": float(n),
+                }
+            )
+    return rows

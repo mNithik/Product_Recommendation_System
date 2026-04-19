@@ -1,0 +1,268 @@
+%%
+%% CS 550 — Massive Data Mining and Learning
+%% Project report (Option 1: Recommender System)
+%%
+%% Template class: ACM acmart (same family as the course-linked Overleaf template:
+%% https://www.overleaf.com/latex/templates/acm-conference-proceedings-primary-article-template/wbvnghjbzwpc)
+%%
+%% Compile: pdflatex CS550_project_report.tex  (run twice if references shift)
+%% Requires: acmart (TeX Live / MiKTeX). On Overleaf, start from the ACM template project
+%% and replace the main .tex body with this file, or upload this file as main.tex.
+%%
+\documentclass[sigconf,nonacm]{acmart}
+
+\usepackage{booktabs}
+\usepackage{xspace}
+\usepackage{url}
+
+%% Replace with your information
+\newcommand{\NetID}{\texttt{YOUR\_NETID}\xspace}
+\newcommand{\Course}{CS 550: Massive Data Mining and Learning\xspace}
+
+\title{Recommender Systems for Sparse E-Commerce Ratings:\\
+Amazon Arts, Crafts \& Sewing (5-core)}
+
+\author{Your Name (\NetID)}
+\affiliation{%
+  \institution{Your University}
+  \city{Your City}
+  \country{USA}
+}
+\email{you@university.edu}
+
+\renewcommand{\shortauthors}{Your Name}
+
+\begin{document}
+
+\begin{abstract}
+We build and evaluate a product recommender on the \emph{Amazon Arts, Crafts \& Sewing} 5-core dataset ($\sim$56{,}210 users, $\sim$22{,}917 items, $\sim$494{,}485 ratings, $\sim$99.96\% sparsity). We preprocess reviews into per-user 80/20 train--test splits, predict held-out ratings with mean baselines and matrix factorization (ALS-style MF with biases on GPU), and generate personalized Top-10 lists excluding training interactions. We report MAE and RMSE for rating prediction and Precision@10, Recall@10, F1, and NDCG@10 for ranking. We compare popularity, custom PyTorch BPR/WARP rankers, and \texttt{implicit} library BPR/ALS. Results show strong gains from MF on RMSE, while ranking-optimized objectives (especially implicit ALS and custom WARP) substantially improve Top-10 NDCG over popularity on this split. We ship a Streamlit demo with post-hoc text overlap (TF--IDF / Sentence-BERT over review metadata and text), an optional \emph{late fusion} table and offline Top-$N$ evaluation that does not alter trained rankers, and a fairness audit with configurable activity buckets, extra dispersion statistics, CSV export, and disparity ratios for NDCG, precision, and recall.
+\end{abstract}
+
+\keywords{recommender systems, collaborative filtering, matrix factorization, BPR, WARP, implicit feedback, evaluation metrics, explainability, fairness audit}
+
+\maketitle
+
+\section{Introduction}
+Online marketplaces expose users to enormous catalogs; each user interacts with only a tiny fraction of items, producing extremely sparse user--item matrices. Accurate \emph{rating prediction} and high-quality \emph{Top-$N$ ranking} are related but not identical goals: models trained primarily for squared error on ratings can still rank poorly when evaluated by hit-based ranking metrics at small $N$.
+
+This report documents our implementation for \Course project \emph{Option~1} (recommender system): preprocessing, rating prediction, Top-10 recommendation with the required metrics, and a Streamlit demo with optional text explanations, late-fusion evaluation, and activity-based fairness reporting.
+
+\section{Related Work}
+\textbf{Collaborative filtering and latent factors.} Matrix factorization and bias terms are standard for rating prediction on sparse user--item matrices~\cite{koren2009matrix,herlocker2004evaluating}. \textbf{Implicit feedback and pairwise ranking.} Consuming or ``liking'' an item is often modeled as implicit positives; Hu et al.\ propose ALS-style factorization for implicit datasets~\cite{hu2008collaborative}, while Rendle et al.\ introduce BPR for personalized ranking from implicit pairwise preferences~\cite{rendle2009bpr}. Weston et al.'s WSABIE family motivates sampled hinge/ranking losses that emphasize the top of the list~\cite{weston2011wsabie}. \textbf{Neural recommenders.} Neural collaborative filtering~\cite{he2017neural} remains a common deep-learning baseline we do not train here but cite as contrast. \textbf{Reviews and explainability.} Joint modeling of ratings and review text on Amazon-style data dates to hidden-factor topic models~\cite{mcauley2013hidden}. Our demo uses lightweight \emph{post-hoc} text overlap (TF--IDF and sentence embeddings~\cite{reimers2019sentence}) over concatenated review metadata and language for transparency rather than intrinsic model explanations; see surveys on explainable recommendation~\cite{zhang2020explainable}. \textbf{Evaluation.} Top-$N$ protocol design and metric choice materially affect conclusions~\cite{cremonesi2010,herlocker2004evaluating}. \textbf{Fairness.} Recommenders can amplify popularity bias; broader fairness discussions motivate auditing beyond accuracy~\cite{burke2017multisided,li2021userfairness}.
+
+\subsection{Positioning vs.\ recent work}
+Beyond the classical references above, recent systems learn joint representations from \emph{heterogeneous} sources for ranking~\cite{zhang2017heterogeneous}; structure search and recommendation as \emph{multi-turn dialogue} where the system asks clarifying questions~\cite{zhang2018conversational}; unify many recommendation tasks via pretrained language models and prompts (P5)~\cite{geng2022p5}; perform \emph{neural collaborative reasoning} over structured signals~\cite{chen2020neuralreasoning}; target \emph{causal} effects rather than mere correlation in collaborative training~\cite{xu2021causal}; define \emph{user-oriented} fairness beyond aggregate accuracy~\cite{li2021userfairness}; generate \emph{personalized natural-language} explanations with transformers tied to user history~\cite{li2021pextransformer}; and surface \emph{counterfactual} rationales for ranked items~\cite{tan2021counterfactual}. We do \emph{not} reproduce any of these methods; they outline ambitious future directions relative to our classical CF stack and lightweight demo.
+
+Our implementation only \emph{echoes} themes (a), (f), and (g) at a deliberately small scale. For~(a), we concatenate short phrases from \texttt{overall}, \texttt{verified}, and \texttt{style} (when present) with each review's \texttt{summary} and \texttt{reviewText} into profiles for optional TF--IDF / Sentence-BERT overlap scores---richer text than body alone, but still \emph{not} a deep joint representation learner for ranking as in~\cite{zhang2017heterogeneous}. For~(f), the Streamlit fairness audit buckets users by training-set activity, reports mean, standard deviation, and median of Top-$N$ metrics per bucket, disparity ratios for NDCG/precision/recall, optional CSV export, and configurable quantile buckets---an offline diagnostic in the spirit of user-oriented fairness discussions~\cite{li2021userfairness}, not a fairness-constrained learner or re-ranker from that line of work. For~(g), our explanation numbers are \emph{post-hoc} similarity between the user's past review language and each candidate item's aggregated review language~\cite{reimers2019sentence}, whereas~\cite{li2021pextransformer} learns an end-to-end personalized transformer explainer coupled to the recommender and generates text.
+
+\section{Dataset and Preprocessing}
+\subsection{Dataset}
+We use the public \textbf{Amazon Reviews --- Arts, Crafts \& Sewing (5-core)} subset~\cite{amazon5core}. Each record includes at least \texttt{reviewerID}, \texttt{asin}, \texttt{overall} (1--5), and optional text fields (\texttt{reviewText}, \texttt{summary}); raw rows may also include \texttt{verified} and \texttt{style}. Our JSONL splits retain \texttt{verified} and \texttt{style} when present so downstream text snippets can surface short structured phrases (e.g., star wording, verified purchase, format/color) alongside titles and bodies. The 5-core filter ensures each user and item appears in at least five reviews in the raw corpus, yielding a denser subgraph than the full Amazon graph while remaining realistic for collaborative filtering.
+
+\subsection{Train--test split}
+Following the project specification, for each user we randomly assign \textbf{80\%} of that user's ratings to training and \textbf{20\%} to testing (fixed random seed for reproducibility). After splitting all users, training interactions are written to \texttt{train.json} and test interactions to \texttt{test.json}. In our documented full run, this yields approximately 375{,}028 training and 119{,}457 test interactions (exact counts depend on the split seed and file version).
+
+\subsection{Implicit positives for ranking models}
+For pairwise and implicit-feedback rankers, we treat ratings $\geq 4$ as positive feedback (configurable threshold), consistent with common ``liked item'' semantics for Top-$N$ evaluation against held-out high ratings.
+
+\section{Methods}
+We implement a modular pipeline (Python) with YAML configuration for paths and hyperparameters.
+
+\subsection{Popularity baseline}
+Non-personalized baselines using item popularity and mean ratings, used for sanity checks and cold-start fallback in the demo.
+
+\subsection{Matrix factorization (ALS-style, PyTorch)}
+Latent factor model with global mean and user/item biases, trained with an ALS-style alternating procedure on GPU when available~\cite{koren2009matrix}. Used for \textbf{rating prediction} (MAE/RMSE).
+
+\subsection{Ranking models}
+\begin{itemize}
+  \item \textbf{BPR (Bayesian Personalized Ranking)}~\cite{rendle2009bpr}, custom PyTorch implementation with pairwise negatives.
+  \item \textbf{WARP-style pairwise loss}, custom PyTorch implementation emphasizing top-of-list errors (cf.\ sampled ranking losses~\cite{weston2011wsabie}).
+  \item \textbf{BPR and ALS} via the \texttt{implicit} library (optimized CPU/CUDA backends) for comparison, grounded in implicit-feedback factorization~\cite{hu2008collaborative}.
+\end{itemize}
+
+\subsection{Top-$N$ generation}
+For each user, we recommend $N{=}10$ items not rated in training. Candidate generation follows the project's practical strategy (co-occurrence and popularity padding within a configurable candidate cap). Models produce a ranked list; we evaluate overlap with held-out test items using the required metrics.
+
+\section{Evaluation Metrics}
+\label{sec:metrics}
+\subsection{Rating prediction}
+\textbf{MAE} and \textbf{RMSE} between predicted and held-out star ratings on the test split.
+
+% table* spans both columns in ACM sigconf (avoids wide tabular bleeding into the other column)
+\begin{table*}[t]
+  \caption{Rating prediction (full split documented in repository README).}
+  \label{tab:rating}
+  \centering
+  \begin{tabular}{lrr}
+    \toprule
+    Model & MAE $\downarrow$ & RMSE $\downarrow$ \\
+    \midrule
+    Popularity baseline & 0.6234 & 0.9340 \\
+    Matrix factorization (ALS, PyTorch) & \textbf{0.4632} & \textbf{0.8193} \\
+    \bottomrule
+  \end{tabular}
+\end{table*}
+
+\begin{table*}[t]
+  \caption{Top-10 recommendation (documented full evaluation). MF row reports rating metrics elsewhere; ranking metrics for MF are omitted in the public table when not reported as Top-$N$ primary.}
+  \label{tab:rank}
+  \centering
+  \footnotesize
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{@{}lrrrrr@{}}
+    \toprule
+    Model & P@10 $\uparrow$ & R@10 $\uparrow$ & F1 $\uparrow$ & NDCG@10 $\uparrow$ & Time \\
+    \midrule
+    Popularity baseline & 0.0023 & 0.0087 & 0.0036 & 0.0086 & 1s \\
+    BPR (custom PyTorch) & 0.0019 & 0.0072 & 0.0030 & 0.0079 & 273s \\
+    BPR (\texttt{implicit}) & 0.0007 & 0.0027 & 0.0011 & 0.0015 & 8s \\
+    WARP (custom PyTorch) & 0.0148 & 0.0590 & 0.0237 & 0.0462 & 65s \\
+    Implicit ALS & \textbf{0.0188} & \textbf{0.0735} & \textbf{0.0300} & \textbf{0.0667} & 11s \\
+    \bottomrule
+  \end{tabular}
+\end{table*}
+
+\subsection{Top-10 recommendation}
+Table~\ref{tab:rank} reports Top-10 ranking results under the following definitions. Per user, we compute \textbf{Precision@10}, \textbf{Recall@10}, \textbf{F-measure}, and \textbf{NDCG@10}, then macro-average across evaluated users (implementation details match our codebase and configuration files), consistent with common offline Top-$N$ evaluation practice~\cite{herlocker2004evaluating,cremonesi2010}.
+
+\section{Results}
+Tables~\ref{tab:rating} and~\ref{tab:rank} summarize our main empirical outcomes (placed in Section~\ref{sec:metrics} with the metric definitions). Absolute Precision/Recall values are small at this catalog scale and sparsity; NDCG highlights ranking quality gains from objectives aligned with Top-$N$ evaluation.
+
+\subsection{Discussion}
+\textbf{Rating vs.\ ranking mismatch.} MF achieves the best RMSE/MAE among reported rating predictors, yet Top-$N$ quality is dominated by models trained with ranking-aware losses (Table~\ref{tab:rank}), consistent with prior work on evaluation alignment~\cite{cremonesi2010}. \textbf{Sparsity and catalog size} make raw Precision/Recall inherently small; reporting NDCG and relative lift vs.\ popularity clarifies improvements. \textbf{Baselines matter:} popularity is competitive on this domain, which is common under extreme sparsity.
+
+\section{Demo System}
+We provide a Streamlit application (\texttt{streamlit run app/demo.py}) with tabs for (i) per-user Top-$N$ recommendations, (ii) static model comparison charts, (iii) popular items, (iv) dataset exploration, and (v) a fairness audit.
+
+\paragraph{Primary recommendations and explanations.}
+The ranked list for each user comes \emph{only} from the selected collaborative model (popularity, custom BPR/WARP, or \texttt{implicit} BPR/ALS). Optional heuristic blurbs describe co-rated items. When TF--IDF or Sentence-BERT is enabled, we show cosine similarity between the user's training reviews and each recommended item's aggregated text profile~\cite{reimers2019sentence}. Profiles concatenate compact phrases from \texttt{overall}, \texttt{verified}, \texttt{style}, \texttt{summary}, and \texttt{reviewText} when available---post-hoc explainability related to review-aware modeling~\cite{mcauley2013hidden,zhang2020explainable} without changing CF scores.
+
+\paragraph{Late fusion (optional experiment).}
+With a text index loaded, the demo adds a \emph{separate} table that re-ranks a larger CF candidate pool by a convex combination of (i) normalized position in that pool and (ii) text similarity, controlled by a user-tunable $\alpha$. The original Top-$N$ cards are unchanged. An expander runs offline Precision/Recall/F1/NDCG on the same held-out test protocol for this fused policy over a user sample, for comparison only.
+
+\paragraph{Fairness audit.}
+A dedicated tab evaluates per-user Top-$N$ metrics, aggregates them by training-set activity quantiles (bucket count is configurable), reports mean, standard deviation, and median per bucket, and shows disparity ratios (max/min positive bucket means) for NDCG, precision, and recall. Users can download bucket summaries and per-user rows as CSV. This is an audit layer~\cite{li2021userfairness,burke2017multisided}, not a re-trained fairness objective.
+
+\paragraph{Other.}
+Implicit ALS supports an optional inference-time profile ablation (remove selected rated items from the user vector and re-query). The demo supports full vs.\ small splits and shows fit/recommendation timings.
+
+\section{Reproducibility and Engineering}
+Experiments are driven by \texttt{configs/default.yaml} and \texttt{configs/small.yaml}. Running \texttt{python main.py --config configs/default.yaml} executes preprocessing (if needed), training, evaluation, and writes a timestamped JSON summary under \texttt{experiments/}. Preprocessing writes \texttt{verified} and \texttt{style} into train/test JSON when the raw record contains them. Unit tests cover metrics, splitting behavior, core recommendation utilities, review-snippet construction, late-fusion ranking helpers, and fairness summaries.
+
+\section{Conclusion}
+We implemented a full recommender pipeline on an Amazon 5-core domain with the required preprocessing, rating prediction metrics, Top-10 ranking metrics, and an interactive demo. Empirically, \textbf{matrix factorization} is strongest on RMSE/MAE, while \textbf{implicit ALS} and \textbf{custom WARP} deliver the best documented Top-10 NDCG, illustrating the importance of matching training objectives to evaluation tasks~\cite{cremonesi2010,hu2008collaborative}. The Streamlit application adds transparent text overlap, an optional late-fusion evaluation path, and richer fairness reporting---all strictly post-hoc relative to the trained rankers. Natural extensions include neural collaborative filtering~\cite{he2017neural} and fairness-aware \emph{training} or re-ranking~\cite{burke2017multisided,li2021userfairness}.
+
+\section*{Acknowledgments}
+Course staff and open-source maintainers of PyTorch, SciPy, scikit-learn, and \texttt{implicit}.
+
+\begin{thebibliography}{99}
+
+\bibitem{amazon5core}
+J.~Ni, J.~Li, and J.~McAuley.
+\newblock Amazon Review Data (2018).
+\newblock \url{https://nijianmo.github.io/amazon/index.html}.
+
+\bibitem{cremonesi2010}
+P.~Cremonesi, Y.~Koren, and R.~Turrin.
+\newblock Performance of recommender algorithms on top-$N$ recommendation tasks.
+\newblock In \emph{Proceedings of the Fourth ACM Conference on Recommender Systems (RecSys)}, 2010.
+
+\bibitem{herlocker2004evaluating}
+J.~L. Herlocker, J.~A. Konstan, L.~G. Terveen, and J.~T. Riedl.
+\newblock Evaluating collaborative filtering recommender systems.
+\newblock \emph{ACM Transactions on Information Systems (TOIS)} 22(1), 5--53, 2004.
+
+\bibitem{hu2008collaborative}
+Y.~Hu, Y.~Koren, and C.~Volinsky.
+\newblock Collaborative filtering for implicit feedback datasets.
+\newblock In \emph{Proceedings of the 8th IEEE International Conference on Data Mining (ICDM)}, 263--272, 2008.
+
+\bibitem{rendle2009bpr}
+S.~Rendle, C.~Freudenthaler, Z.~Gantner, and L.~Schmidt-Thieme.
+\newblock {BPR}: Bayesian personalized ranking from implicit feedback.
+\newblock In \emph{Proceedings of the 25th Conference on Uncertainty in Artificial Intelligence (UAI)}, 452--461, 2009.
+
+\bibitem{koren2009matrix}
+Y.~Koren, R.~Bell, and C.~Volinsky.
+\newblock Matrix factorization techniques for recommender systems.
+\newblock \emph{Computer} 42(8), 30--37, 2009.
+
+\bibitem{weston2011wsabie}
+J.~Weston, S.~Bengio, and N.~Usunier.
+\newblock {WSABIE}: Scaling up to large vocabulary image annotation.
+\newblock In \emph{Proceedings of the Twenty-Second International Joint Conference on Artificial Intelligence (IJCAI)}, 2764--2770, 2011.
+
+\bibitem{he2017neural}
+X.~He, L.~Liao, H.~Zhang, L.~Nie, X.~Hu, and T.-S. Chua.
+\newblock Neural collaborative filtering.
+\newblock In \emph{Proceedings of the 26th International Conference on World Wide Web (WWW)}, 173--182, 2017.
+
+\bibitem{mcauley2013hidden}
+J.~McAuley and J.~Leskovec.
+\newblock Hidden factors and hidden topics: understanding rating dimensions with review text.
+\newblock In \emph{Proceedings of the 7th ACM Conference on Recommender Systems (RecSys)}, 165--172, 2013.
+
+\bibitem{reimers2019sentence}
+N.~Reimers and I.~Gurevych.
+\newblock Sentence-{BERT}: Sentence embeddings using {Siamese} {BERT}-networks.
+\newblock In \emph{Proceedings of the 2019 Conference on Empirical Methods in Natural Language Processing (EMNLP)}, 3982--3992, 2019.
+
+\bibitem{zhang2020explainable}
+Y.~Zhang and X.~Chen.
+\newblock Explainable recommendation: A survey and new perspectives.
+\newblock \emph{ACM Computing Surveys (CSUR)} 52(1), Article~5, 1--38, 2020.
+
+\bibitem{burke2017multisided}
+R.~Burke.
+\newblock Multisided fairness for recommendation.
+\newblock \emph{arXiv preprint arXiv:1707.00093}, 2017.
+
+\bibitem{zhang2017heterogeneous}
+Y.~Zhang, Q.~Ai, X.~Chen, and W.~B. Croft.
+\newblock Joint representation learning for top-$N$ recommendation with heterogeneous information sources.
+\newblock In \emph{Proceedings of the 26th ACM International Conference on Information and Knowledge Management (CIKM)}, 1449--1458, 2017.
+\newblock \url{https://doi.org/10.1145/3132847.3132892}
+
+\bibitem{zhang2018conversational}
+Y.~Zhang, X.~Chen, Q.~Ai, L.~Yang, and W.~B. Croft.
+\newblock Towards conversational search and recommendation: System ask, user respond.
+\newblock In \emph{Proceedings of the 27th ACM International Conference on Information and Knowledge Management (CIKM)}, 177--186, 2018.
+\newblock \url{https://doi.org/10.1145/3269206.3271776}
+
+\bibitem{geng2022p5}
+S.~Geng, Z.~Fu, J.~Tan, Y.~Ge, G.~de Melo, and Y.~Zhang.
+\newblock Recommendation as language processing (RLP): A unified pretrain, personalized prompt and predict paradigm (P5).
+\newblock \emph{arXiv preprint arXiv:2203.13366}, 2022.
+
+\bibitem{chen2020neuralreasoning}
+X.~Chen, H.~Xu, Y.~Zhang, J.~Tang, Y.~Cao, Z.~Qin, and H.~Zha.
+\newblock Neural collaborative reasoning.
+\newblock In \emph{Proceedings of the European Conference on Machine Learning and Principles and Practice of Knowledge Discovery in Databases (ECML PKDD)}, 2020.
+\newblock \url{https://arxiv.org/abs/2005.08129}
+
+\bibitem{xu2021causal}
+S.~Xu, Y.~Ge, Y.~Li, Z.~Fu, X.~Chen, and Y.~Zhang.
+\newblock Causal collaborative filtering.
+\newblock \emph{arXiv preprint arXiv:2102.01868}, 2021.
+
+\bibitem{li2021userfairness}
+Y.~Li, H.~Chen, Z.~Fu, Y.~Ge, and Y.~Zhang.
+\newblock User-oriented fairness in recommendation.
+\newblock \emph{arXiv preprint arXiv:2104.10671}, 2021.
+
+\bibitem{li2021pextransformer}
+L.~Li, Y.~Zhang, and L.~Chen.
+\newblock Personalized transformer for explainable recommendation.
+\newblock In \emph{Proceedings of the 59th Annual Meeting of the Association for Computational Linguistics (ACL)}, 4947--4960, 2021.
+\newblock \url{https://aclanthology.org/2021.acl-long.383/}
+
+\bibitem{tan2021counterfactual}
+J.~Tan, S.~Xu, Y.~Ge, Y.~Li, X.~Chen, and Y.~Zhang.
+\newblock Counterfactual explainable recommendation.
+\newblock In \emph{Proceedings of the 30th ACM International Conference on Information and Knowledge Management (CIKM)}, 3124--3133, 2021.
+\newblock \url{https://arxiv.org/abs/2108.10539}
+
+\end{thebibliography}
+
+\end{document}
