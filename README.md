@@ -1,6 +1,6 @@
-# Recommender Systems Research Project
+# Recommender Systems Project
 
-A research-oriented recommender-systems project built on the **Amazon Arts, Crafts & Sewing 5-core** dataset. The repository preserves the original baseline models, cleanly separates rating prediction from Top-N recommendation, and adds modular post-hoc explainability, approximate counterfactual reasoning, fairness and beyond-accuracy evaluation, cold-start benchmarking, and an optional content-aware hybrid branch.
+A recommender-systems project built on the **Amazon Arts, Crafts & Sewing 5-core** dataset. The repository preserves the original baseline models, cleanly separates rating prediction from Top-N recommendation, and adds modular post-hoc explainability, approximate counterfactual reasoning, fairness and beyond-accuracy evaluation, cold-start benchmarking, and an optional content-aware hybrid branch.
 
 **56K users | 23K items | 494K interactions | 99.96% sparse | explicit + ranking baselines | explainability | interactive demo**
 
@@ -14,14 +14,14 @@ This repository is organized around six distinct layers:
    Uses ranking-oriented models for Precision/Recall/F1/NDCG evaluation.
 3. **Counterfactual explainability extension**
    Adds practical post-hoc explanations and weakening conditions for recommended items.
-4. **Optional causal-inspired adjustment**
+4. **Optional score adjustment**
    Adds a toggleable post-ranking score adjustment layer without replacing the base recommender.
 5. **Optional content-aware hybrid branch**
    Adds a TF-IDF review-text fallback / re-ranking wrapper for cold-start and sparse-user comparison.
 6. **Evaluation beyond average accuracy**
    Adds fairness, coverage, diversity, novelty, and cold-start benchmark reporting.
 
-The project is meant to support both coursework and research-style reporting, so the code emphasizes modularity, explicit stage boundaries, reproducibility, and readable experiments over heavy end-to-end rewrites.
+The project is meant to support both coursework and clear project reporting, so the code emphasizes modularity, explicit stage boundaries, reproducibility, and readable experiments over heavy end-to-end rewrites.
 
 ## Dataset
 
@@ -36,7 +36,7 @@ The project is meant to support both coursework and research-style reporting, so
 
 The 5-core subset ensures every user and item has at least 5 interactions.
 
-## Research Pipeline
+## Project Pipeline
 
 ```text
 Raw JSONL reviews
@@ -56,7 +56,7 @@ Raw JSONL reviews
   -> counterfactual layer
      -> minimal weakening condition
      -> weakening candidates with estimated impact
-  -> optional causal-inspired adjustment
+  -> optional score adjustment
      -> support boost
      -> popularity penalty
      -> adjusted ranking
@@ -105,7 +105,7 @@ Applied after ranking:
 
 - structured explanation engine
 - approximate counterfactual explanations
-- optional causal-inspired score adjustment
+- optional score adjustment
 - optional content-aware hybrid wrapper
 
 These modules do **not** replace the underlying baseline recommender.
@@ -125,7 +125,7 @@ The codebase is organized around explicit stages.
 - `src/explainability/`
   Item support, structured explanations, and counterfactual weakening.
 - `src/postprocessing/`
-  Optional causal-inspired score adjustment.
+  Optional score adjustment.
 - `src/hybrid/`
   Optional collaborative + content hybrid wrapper.
 - `src/evaluation/`
@@ -144,7 +144,7 @@ The codebase is organized around explicit stages.
 
 ## Explainability And Counterfactual Layer
 
-The main research extension is a practical CountER-inspired post-hoc explanation layer.
+The main extension is a practical post-hoc counterfactual explanation layer.
 
 For each recommended item, the system can provide:
 
@@ -158,7 +158,7 @@ This is intentionally approximate. It is designed to be transparent and practica
 
 ## Optional Causal-Inspired Adjustment
 
-The repository also includes a lightweight causal-inspired post-ranking adjustment layer.
+The repository also includes a lightweight post-ranking score adjustment layer.
 
 When enabled, the layer:
 
@@ -185,7 +185,7 @@ This is designed as a practical cold-start / sparse-user extension, not as a rep
 
 ## Evaluation Structure
 
-Evaluation is now split by research concern:
+Evaluation is now split by project concern:
 
 - `src/evaluation/rating.py`
   Rating-prediction evaluation
@@ -317,7 +317,7 @@ Implemented:
 - modular ranking/recommendation pipeline
 - structured explanation engine
 - approximate counterfactual weakening layer
-- optional causal-inspired adjustment layer
+- optional score adjustment layer
 - optional content-aware hybrid branch
 - fairness, beyond-accuracy, and cold-start evaluation layers
 - cleaner evaluation split
@@ -331,4 +331,4 @@ Not implemented yet or intentionally deferred:
 - full neural explainability architectures
 - deployment-oriented model serving and caching
 
-Those remain valid future-work directions, but the current repository already supports a coherent research report around baseline recommendation, explainability, counterfactual analysis, and optional causal-style post-processing.
+Those remain valid future-work directions, but the current repository already supports a coherent project report around baseline recommendation, explainability, counterfactual analysis, and optional causal-style post-processing.

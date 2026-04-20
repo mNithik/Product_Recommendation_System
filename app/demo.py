@@ -1,5 +1,5 @@
 """
-Lightweight research demo for the recommender project.
+Lightweight demo for the recommender project.
 
 Run:
     streamlit run app/demo.py
