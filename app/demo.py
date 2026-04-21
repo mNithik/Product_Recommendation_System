@@ -292,6 +292,27 @@ def _download_file(url: str, dst: Path) -> None:
     urllib.request.urlretrieve(url, dst)
 
 
+def _is_valid_jsonl(path: Path, sample_lines: int = 5) -> bool:
+    if not path.exists() or path.stat().st_size == 0:
+        return False
+    checked = 0
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for raw in handle:
+                line = raw.strip()
+                if not line:
+                    continue
+                obj = json.loads(line)
+                if not isinstance(obj, dict):
+                    return False
+                checked += 1
+                if checked >= sample_lines:
+                    break
+    except Exception:
+        return False
+    return checked > 0
+
+
 def _try_prepare_full_data_from_urls() -> bool:
     train_url = os.getenv("TRAIN_JSON_URL", "").strip()
     test_url = os.getenv("TEST_JSON_URL", "").strip()
@@ -309,14 +330,31 @@ def _try_prepare_full_data_from_urls() -> bool:
     except Exception:
         return False
 
-    return full_train.exists() and full_test.exists()
+    ok = _is_valid_jsonl(full_train) and _is_valid_jsonl(full_test)
+    if not ok:
+        try:
+            if full_train.exists():
+                full_train.unlink()
+            if full_test.exists():
+                full_test.unlink()
+        except OSError:
+            pass
+    return ok
 
 
 def resolve_data_paths() -> tuple[str, str, str]:
     full_train = Path("data/train.json")
     full_test = Path("data/test.json")
-    if full_train.exists() and full_test.exists():
+    if _is_valid_jsonl(full_train) and _is_valid_jsonl(full_test):
         return str(full_train), str(full_test), "full"
+    if full_train.exists() or full_test.exists():
+        try:
+            if full_train.exists():
+                full_train.unlink()
+            if full_test.exists():
+                full_test.unlink()
+        except OSError:
+            pass
 
     if _try_prepare_full_data_from_urls() and full_train.exists() and full_test.exists():
         return str(full_train), str(full_test), "full"
