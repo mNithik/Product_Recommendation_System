@@ -1,185 +1,277 @@
-# Product Recommendation System
+# Recommender Systems Project
 
-A reproducible recommendation engine built on the **Amazon Arts, Crafts & Sewing 5-core** dataset. Implements six models — from a popularity baseline to GPU-accelerated matrix factorization, BPR, and WARP ranking — with full evaluation and a Streamlit demo for interactive exploration.
+A recommender-systems project built on the **Amazon Arts, Crafts & Sewing 5-core** dataset. The repository preserves the original baseline models, cleanly separates rating prediction from Top-N recommendation, and adds modular post-hoc explainability, approximate counterfactual reasoning, fairness and beyond-accuracy evaluation, cold-start benchmarking, and an optional content-aware hybrid branch.
 
-**56K users | 23K items | 494K interactions | 99.96% sparse | 6 models | full train/test evaluation | interactive demo**
+**56K users | 23K items | 494K interactions | 99.96% sparse | explicit + ranking baselines | explainability | interactive demo**
 
----
+## Project Goals
 
-## Problem
+This repository is organized around six distinct layers:
 
-Users interact with a vast catalog of products, but only rate a tiny fraction. The resulting user-item matrix is extremely sparse, making it difficult to predict preferences. This project addresses that challenge by:
+1. **Baseline rating prediction**
+   Uses explicit-feedback models for MAE/RMSE evaluation.
+2. **Baseline Top-N ranking and recommendation**
+   Uses ranking-oriented models for Precision/Recall/F1/NDCG evaluation.
+3. **Counterfactual explainability extension**
+   Adds practical post-hoc explanations and weakening conditions for recommended items.
+4. **Optional score adjustment**
+   Adds a toggleable post-ranking score adjustment layer without replacing the base recommender.
+5. **Optional content-aware hybrid branch**
+   Adds a TF-IDF review-text fallback / re-ranking wrapper for cold-start and sparse-user comparison.
+6. **Evaluation beyond average accuracy**
+   Adds fairness, coverage, diversity, novelty, and cold-start benchmark reporting.
 
-- Learning latent user and item representations from observed ratings
-- Predicting explicit ratings for unseen user-item pairs (MAE, RMSE)
-- Generating personalized **Top-10** recommendation lists ranked by relevance (Precision, Recall, F1, NDCG)
-- Comparing **rating-optimized** vs **ranking-optimized** training objectives
+The project is meant to support both coursework and clear project reporting, so the code emphasizes modularity, explicit stage boundaries, reproducibility, and readable experiments over heavy end-to-end rewrites.
 
 ## Dataset
 
 | Statistic | Value |
 |---|---|
-| **Source** | [Amazon Reviews — Arts, Crafts & Sewing 5-core](https://nijianmo.github.io/amazon/index.html) |
+| **Source** | [Amazon Reviews - Arts, Crafts & Sewing 5-core](https://nijianmo.github.io/amazon/index.html) |
 | **Users** | 56,210 |
 | **Items** | 22,917 |
 | **Interactions** | 494,485 |
-| **Rating scale** | 1 – 5 |
-| **Sparsity** | ~99.96 % |
+| **Rating scale** | 1-5 |
+| **Sparsity** | ~99.96% |
 
-> *5-core* means every user and item has at least 5 reviews.
+The 5-core subset ensures every user and item has at least 5 interactions.
 
-## Pipeline
+## Project Pipeline
 
+```text
+Raw JSONL reviews
+  -> preprocessing and per-user train/test split
+  -> rating prediction branch
+     -> Popularity, Matrix Factorization (ALS-style)
+     -> MAE, RMSE
+  -> ranking branch
+     -> Popularity, BPR, WARP, Implicit ALS, Implicit BPR
+     -> explicit ranking result
+     -> final Top-N recommendation
+     -> Precision@K, Recall@K, F1, NDCG@K
+  -> post-hoc explanation layer
+     -> supporting history items
+     -> similar supporting items
+     -> support confidence
+  -> counterfactual layer
+     -> minimal weakening condition
+     -> weakening candidates with estimated impact
+  -> optional score adjustment
+     -> support boost
+     -> popularity penalty
+     -> adjusted ranking
+  -> optional content-aware hybrid branch
+     -> collaborative pool
+     -> TF-IDF review-text similarity
+     -> hybrid reranking
 ```
-Raw JSONL data (494K reviews)
-    │
-    ▼
-Preprocessing (per-user 80/20 random split)
-    │
-    ├──► train.json (375,028)
-    └──► test.json  (119,457)
-           │
-           ▼
-    ┌─────────────────────────────────┐
-    │  Rating Prediction              │
-    │  Popularity, MF (ALS on GPU)    │──► MAE, RMSE
-    └─────────────────────────────────┘
-           │
-           ▼
-    ┌─────────────────────────────────┐
-    │  Top-10 Ranking                 │
-    │  Popularity, BPR (custom),      │
-    │  BPR (implicit), Implicit ALS,  │──► Precision@10, Recall@10, F1, NDCG@10
-    │  WARP (custom)                  │
-    └─────────────────────────────────┘
-           │
-           ▼
-    Experiment JSON + Results Table
-```
 
-## Models Implemented
+## Model-Task Separation
 
-| Model | Type | Built From Scratch | Use |
-|---|---|---|---|
-| **Popularity Baseline** | Non-personalized, most-popular items | Yes | Baseline |
-| **Matrix Factorization (ALS)** | Latent factor model with biases, GPU-accelerated | Yes (PyTorch) | Rating prediction |
-| **BPR (custom)** | Pairwise ranking with hard negative sampling | Yes (PyTorch) | Top-N ranking |
-| **BPR (implicit library)** | Optimized C++/CUDA BPR backend | No (library) | Comparison |
-| **Implicit ALS** | Weighted implicit feedback MF | No (library) | Top-N ranking |
-| **WARP (custom)** | Approximate-rank pairwise loss, top-of-list optimized | Yes (PyTorch) | Top-N ranking |
-
-## Results
+The repository enforces a cleaner separation between explicit rating prediction and Top-K recommendation.
 
 ### Rating Prediction
 
-| Model | MAE ↓ | RMSE ↓ | vs Baseline |
-|---|---|---|---|
-| Popularity Baseline | 0.6234 | 0.9340 | — |
-| **Matrix Factorization (ALS)** | **0.4632** | **0.8193** | **−26% MAE, −12% RMSE** |
+Used only for explicit rating prediction:
 
-> MF with learned user/item biases on GPU closes the gap substantially. On a 1–5 scale the model's predictions are off by less than half a star on average.
+- `PopularityBaseline`
+- `MatrixFactorizationGPU`
 
-### Top-10 Recommendation
+Evaluated with:
 
-| Model | P@10 ↑ | R@10 ↑ | F1 ↑ | NDCG@10 ↑ | vs Baseline (NDCG) | Time |
-|---|---|---|---|---|---|---|
-| Popularity Baseline | 0.0023 | 0.0087 | 0.0036 | 0.0086 | — | 1s |
-| BPR (custom PyTorch) | 0.0019 | 0.0072 | 0.0030 | 0.0079 | −8% | 273s |
-| BPR (implicit library) | 0.0007 | 0.0027 | 0.0011 | 0.0015 | −83% | 8s |
-| **WARP (custom PyTorch)** | **0.0148** | **0.0590** | **0.0237** | **0.0462** | **+437%** | 65s |
-| **Implicit ALS** | **0.0188** | **0.0735** | **0.0300** | **0.0667** | **+676%** | 11s |
+- `MAE`
+- `RMSE`
 
-### What These Numbers Mean
+### Ranking / Top-N Recommendation
 
-These absolute values look small, but **context matters**:
+Used only for Top-K ranking and recommendation:
 
-- **99.96% sparsity** — each user has rated only ~9 of 22,917 items. Predicting the handful of relevant items from tens of thousands of candidates is inherently hard.
-- **Popularity is a strong baseline** for sparse datasets — it outperforms both BPR variants, which is a well-documented phenomenon when interaction data is thin.
-- **Implicit ALS** achieves **+676% NDCG** over the popularity baseline, meaning it ranks relevant items nearly 8× higher in the top-10 list.
-- **WARP** (built from scratch in PyTorch) achieves **+437% NDCG** — the best among all from-scratch models and competitive with production-grade library code.
-- **Rating ≠ Ranking** — MF achieves excellent RMSE but generates poor top-10 lists. This confirms the widely studied mismatch between rating-prediction and ranking objectives (Cremonesi et al., 2010).
+- `PopularityBaseline`
+- `BPRMatrixFactorization`
+- `ImplicitBPRRanker`
+- `ImplicitALSRanker`
+- `WARPModel`
 
-> **Key takeaway:** The training objective must match the evaluation task. Optimizing for RMSE does not produce good recommendation lists — pairwise ranking losses (BPR, WARP) are essential for top-N recommendation.
+Evaluated with:
 
-## Interactive Demo
+- `Precision@K`
+- `Recall@K`
+- `F1`
+- `NDCG@K`
 
-> **Try it yourself** — the Streamlit app lets you pick any user, choose a model, and see personalized recommendations with explanations of *why* each item was suggested.
+### Post-Hoc Extensions
+
+Applied after ranking:
+
+- structured explanation engine
+- approximate counterfactual explanations
+- optional score adjustment
+- optional content-aware hybrid wrapper
+
+These modules do **not** replace the underlying baseline recommender.
+
+## Current Architecture
+
+The codebase is organized around explicit stages.
+
+### Core packages
+
+- `src/preprocessing/`
+  Data loading, splitting, and dataset generation.
+- `src/models/`
+  Baseline explicit and ranking models.
+- `src/pipeline/`
+  Explicit `ranking -> recommendation` stages.
+- `src/explainability/`
+  Item support, structured explanations, and counterfactual weakening.
+- `src/postprocessing/`
+  Optional score adjustment.
+- `src/hybrid/`
+  Optional collaborative + content hybrid wrapper.
+- `src/evaluation/`
+  Separate evaluation wrappers for rating, recommendation, explanation, fairness, and late fusion.
+- `app/`
+  Streamlit demo.
+
+### Key files
+
+- `main.py`
+  Runs the offline baseline experiment pipeline.
+- `app/demo.py`
+  Interactive demo with ranking, recommendation, explanation, counterfactual, and causal-adjustment views.
+- `ARCHITECTURE_AUDIT_AND_REFACTOR_PLAN.md`
+  Architecture ownership and staged refactor plan.
+
+## Explainability And Counterfactual Layer
+
+The main extension is a practical post-hoc counterfactual explanation layer.
+
+For each recommended item, the system can provide:
+
+- supporting past user interactions
+- supporting similar items
+- a support/confidence score
+- a counterfactual weakening statement
+- weakening candidates with estimated impact
+
+This is intentionally approximate. It is designed to be transparent and practical rather than a full reproduction of a heavy explainability architecture.
+
+## Optional Causal-Inspired Adjustment
+
+The repository also includes a lightweight post-ranking score adjustment layer.
+
+When enabled, the layer:
+
+- starts from the base ranking score
+- adds a support-confidence boost
+- subtracts a popularity penalty
+- re-sorts items into an adjusted ranking
+
+This is **not** a full causal graph or treatment-effect model. It is an interpretable post-hoc reweighting layer intended for controlled comparison against the unadjusted baseline.
+
+## Optional Content-Aware Hybrid Branch
+
+The project now also includes an optional lightweight hybrid branch built on top of the existing rankers.
+
+When enabled, the hybrid branch:
+
+- keeps the base collaborative model intact
+- uses the collaborative model to generate a candidate pool
+- computes TF-IDF review-text similarity between the user profile and candidate items
+- reorders the collaborative pool with a configurable hybrid weight
+- uses a lower collaborative weight for sparse-history users
+
+This is designed as a practical cold-start / sparse-user extension, not as a replacement for the baseline ranking models.
+
+## Evaluation Structure
+
+Evaluation is now split by project concern:
+
+- `src/evaluation/rating.py`
+  Rating-prediction evaluation
+- `src/evaluation/recommendation.py`
+  Top-K recommendation evaluation
+- `src/evaluation/explanation.py`
+  Explanation and counterfactual coverage summaries
+- `src/evaluation/fairness.py`
+  Activity-bucket disparity audit
+- `src/evaluation/cold_start.py`
+  Sparse-user and warm-user benchmark summaries
+- `src/evaluation/late_fusion.py`
+  Optional text-based late-fusion reranking experiment
+- `src/evaluation/recommendation.py`
+  Also includes beyond-accuracy metrics such as coverage, diversity, novelty, and popularity concentration
+
+## Current Project Status
+
+The repository now supports the following report-ready evaluation views:
+
+- rating prediction metrics for explicit-feedback baselines
+- ranking metrics for Top-N recommenders
+- explanation and counterfactual output coverage
+- fairness gaps across user-activity groups
+- beyond-accuracy metrics such as catalog coverage, diversity, novelty, and popularity concentration
+- cold-start and sparse-user benchmarking
+- hybrid-vs-base comparison for content-aware reranking
+
+## Streamlit Demo
+
+Launch the demo with:
 
 ```bash
 streamlit run app/demo.py
 ```
 
-| Tab | What It Shows |
-|---|---|
-| **Recommend for User** | Select a user + model → Top-N recommendations with per-item explainability |
-| **Model Comparison** | Side-by-side results table + bar charts for all 6 models |
-| **Popular Items** | Browse the 30 most-rated items in the catalog |
-| **Dataset Explorer** | Rating distributions, interactions per user, sample data |
+### Deploy on Streamlit Community Cloud
 
-### Highlights
+1. Push your branch to GitHub.
+2. In Streamlit Community Cloud, click **Create app**.
+3. Select repository + branch and set entrypoint to `app/demo.py`.
+4. Deploy.
 
-- **Explainability** — each recommendation shows the reasoning: overlapping user communities, taste-profile match, or popularity fallback
-- **Cold-start handling** — new/unseen users automatically fall back to the popularity baseline
-- **Model switching** — swap between Implicit ALS, WARP, BPR, and Popularity in the sidebar and compare recommendations live
-- **Dataset toggle** — switch between the full 494K-interaction dataset and a 5K-user subsample for faster iteration
+The demo automatically uses `data/train.json` and `data/test.json` when available, and falls back to `data_small/` for lightweight cloud startup.
+For cloud runs, you can also set environment variables `TRAIN_JSON_URL` and `TEST_JSON_URL`.
+If full data files are missing, the app will try downloading them first, then fall back to `data_small/` if download fails.
 
-## Project Structure
+The demo exposes the staged pipeline clearly:
 
-```
-recommender-system/
-├── app/
-│   └── demo.py             # Streamlit demo
-├── data/                    # Generated train/test splits (gitignored)
-├── src/
-│   ├── preprocessing/       # Data loading, per-user splitting, subsampling
-│   ├── models/
-│   │   ├── popularity.py    # Popularity baseline
-│   │   ├── item_cf.py       # Item-based CF (from scratch)
-│   │   ├── matrix_factorization.py  # ALS on GPU (from scratch)
-│   │   ├── bpr.py           # BPR with hard negatives (from scratch)
-│   │   ├── warp.py          # WARP loss (from scratch)
-│   │   ├── implicit_bpr.py  # BPR via implicit library
-│   │   └── implicit_als.py  # ALS via implicit library
-│   ├── evaluation/          # MAE, RMSE, Precision, Recall, F1, NDCG
-│   └── utils/               # Config loader, data loader, experiment tracker
-├── configs/                 # YAML experiment configs
-├── tests/                   # pytest unit & integration tests (40 tests)
-├── experiments/             # Auto-saved experiment JSONs
-├── requirements.txt
-├── README.md
-└── main.py                  # Runs all 6 models head-to-head
-```
+- user history
+- base ranked candidates
+- optional content-aware hybrid reranking
+- optional causal-adjusted ranking
+- final Top-N recommendations
+- explanation text
+- support confidence
+- supporting history and similar items
+- counterfactual weakening conditions
+- optional TF-IDF content-aware hybrid fallback
+- fairness snapshot
+- coverage, diversity, and novelty snapshot
 
 ## Quick Start
 
 ```bash
-# 1. Clone
 git clone https://github.com/mNithik/Product_Recommendation_System.git
 cd Product_Recommendation_System
-
-# 2. Install dependencies
 pip install -r requirements.txt
 
-# 3. Place dataset
-#    Download Arts_Crafts_and_Sewing_5.json into Arts_Crafts_and_Sewing_5.json/
+# Place Arts_Crafts_and_Sewing_5.json in:
+# Arts_Crafts_and_Sewing_5.json/Arts_Crafts_and_Sewing_5.json
 
-# 4. Run the full pipeline (all 6 models, ~20 min)
 python main.py --config configs/default.yaml
-
-# 5. Launch demo
 streamlit run app/demo.py
-
-# 6. Run tests
 pytest tests/ -v
 ```
 
 ## Configuration
 
-All hyperparameters are controlled via YAML:
+Main experiment settings live in `configs/default.yaml`.
+
+Example:
 
 ```yaml
 model:
-  type: "bpr"               # bpr | bpr_implicit | item_cf | matrix_factorization
+  type: "bpr"
   n_factors: 64
   n_epochs: 20
   lr: 0.001
@@ -192,12 +284,82 @@ evaluation:
   min_train_ratings: 5
 ```
 
-Each run auto-saves config + all metrics to `experiments/<name>_<timestamp>.json`.
+The Streamlit demo also exposes interactive controls for:
 
-## Future Improvements
+- recommendation model selection
+- causal-adjustment toggle and weights
+- content-aware hybrid toggle and weights
 
-- **Hybrid recommendations** — combine CF with item metadata / review text embeddings (TF-IDF, sentence transformers)
-- **LightGCN** — graph convolution over the user-item bipartite graph for stronger ranking
-- **Cold-start handling** — content-based fallback using review text for new items
-- **ANN retrieval** — FAISS/ScaNN for sub-linear candidate generation at scale
-- **Online serving** — FastAPI endpoint with cached embeddings for real-time inference
+## WSL GPU For Implicit ALS/BPR
+
+If you want GPU acceleration for `implicit` ALS/BPR, run these models in WSL/Linux.
+On Windows native Python, `implicit` typically runs CPU-only.
+
+From PowerShell in this repo:
+
+```powershell
+.\setup_implicit_gpu_wsl.ps1
+.\run_gpu_profile_wsl.ps1
+```
+
+What this does:
+
+- creates `.venv-wsl-gpu` inside the project (in WSL)
+- installs requirements
+- rebuilds `implicit` from source in WSL
+- verifies CUDA usage with `scripts/verify_implicit_gpu.py`
+- runs `main.py --config configs/gpu_profile.yaml --experiment wsl_gpu_run`
+
+## Testing
+
+The repository includes tests for:
+
+- preprocessing
+- recommendation metrics
+- ranking/recommendation pipeline behavior
+- popularity baseline behavior
+- explanation output structure
+- counterfactual output structure
+- causal-adjustment toggle behavior
+- explanation/counterfactual evaluation summaries
+- late fusion
+- fairness summaries
+- beyond-accuracy recommendation metrics
+- cold-start benchmark summaries
+- content-aware hybrid wrapper
+- review-text profile utilities
+
+## Limitations
+
+The project is intentionally practical rather than fully production-grade. The main current limitations are:
+
+- optional dependencies such as `implicit` and some `torch` configurations may vary by environment
+- counterfactual explanations are approximate and post-hoc rather than model-intrinsic
+- the causal layer is a lightweight score adjustment, not a full causal graph model
+- the content-aware hybrid branch uses TF-IDF review text rather than a heavier neural content encoder
+- offline experiments can be time-consuming on large models and full data
+
+## Future Work
+
+Implemented:
+
+- explicit baseline rating prediction
+- explicit baseline Top-N ranking
+- modular ranking/recommendation pipeline
+- structured explanation engine
+- approximate counterfactual weakening layer
+- optional score adjustment layer
+- optional content-aware hybrid branch
+- fairness, beyond-accuracy, and cold-start evaluation layers
+- cleaner evaluation split
+- Streamlit demo reflecting the staged pipeline
+
+Not implemented yet or intentionally deferred:
+
+- a full causal collaborative filtering model
+- a PETER-style Transformer branch
+- a production retrieval stack
+- full neural explainability architectures
+- deployment-oriented model serving and caching
+
+Those remain valid future-work directions, but the current repository already supports a coherent project report around baseline recommendation, explainability, counterfactual analysis, and optional causal-style post-processing.

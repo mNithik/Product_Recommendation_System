@@ -29,10 +29,16 @@ venv/
 
 # Streamlit
 .streamlit/
+logs/
 
 # OS
 .DS_Store
 Thumbs.db
+
+# Test/debug artifacts
+.pytest_cache/
+tests_artifacts_tmp/
+submission_snapshot_baseline_2026-04-19/
 
 # Project report (LaTeX source and build products stay local only)
 report/*.tex

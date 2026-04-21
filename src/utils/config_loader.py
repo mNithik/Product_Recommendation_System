@@ -96,4 +96,19 @@ def parse_args() -> argparse.Namespace:
         "--experiment", type=str, default=None,
         help="Experiment name (overrides config)",
     )
+    parser.add_argument(
+        "--eval-only",
+        action="store_true",
+        help="Skip training and evaluate using saved model artifacts for the experiment",
+    )
+    parser.add_argument(
+        "--resume-artifacts",
+        action="store_true",
+        help="Load model artifacts when available and train only missing models",
+    )
+    parser.add_argument(
+        "--no-save-models",
+        action="store_true",
+        help="Do not save fitted model artifacts after training",
+    )
     return parser.parse_args()

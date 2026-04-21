@@ -118,8 +118,10 @@ class ReviewTextProfileIndex:
         min_df: int = 2,
         max_snippet: int = 400,
         max_parts_per_item: int = 12,
+        max_reviews_per_user: int = 15,
     ):
         self._asin_to_row: dict[str, int] = {}
+        self._user_docs: dict[str, str] = {}
         self._vectorizer = TfidfVectorizer(
             max_features=max_features,
             min_df=min_df,
@@ -128,14 +130,18 @@ class ReviewTextProfileIndex:
         )
 
         parts_by_item: dict[str, list[str]] = defaultdict(list)
+        parts_by_user: dict[str, list[str]] = defaultdict(list)
         for r in train_records:
             asin = r.get("asin")
+            user_id = r.get("reviewerID")
             if not asin:
                 continue
             snip = review_snippet_from_record(r, max_summary_len=200, max_review_len=max_snippet)
             if not snip:
                 continue
             parts_by_item[asin].append(snip)
+            if user_id and len(parts_by_user[user_id]) < max_reviews_per_user:
+                parts_by_user[user_id].append(snip)
 
         item_ids: list[str] = []
         docs: list[str] = []
@@ -155,9 +161,13 @@ class ReviewTextProfileIndex:
 
         self._item_matrix = self._vectorizer.fit_transform(docs)
         self._item_ids = item_ids
+        self._user_docs = {user_id: " ".join(parts) for user_id, parts in parts_by_user.items()}
         logger.info("ReviewTextProfileIndex: %d items with text", len(item_ids))
 
     def user_profile_text(self, train_records: list[dict], user_id: str, max_reviews: int = 15) -> str:
+        cached = self._user_docs.get(user_id)
+        if cached is not None:
+            return cached
         chunks: list[str] = []
         for r in train_records:
             if r.get("reviewerID") != user_id:
@@ -180,3 +190,42 @@ class ReviewTextProfileIndex:
         v = self._item_matrix[row]
         sim = cosine_similarity(u, v)[0, 0]
         return float(max(0.0, min(1.0, sim)))
+
+    def cosine_user_items(self, train_records: list[dict], user_id: str, item_asins: list[str]) -> list[float]:
+        profile = self.user_profile_text(train_records, user_id)
+        if len(profile) < 20 or not item_asins:
+            return [0.0] * len(item_asins)
+
+        row_ids: list[int] = []
+        valid_positions: list[int] = []
+        scores = [0.0] * len(item_asins)
+        for pos, item_asin in enumerate(item_asins):
+            row = self._asin_to_row.get(item_asin)
+            if row is None:
+                continue
+            row_ids.append(row)
+            valid_positions.append(pos)
+
+        if not row_ids:
+            return scores
+
+        u = self._vectorizer.transform([profile])
+        v = self._item_matrix[row_ids]
+
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                u_dense = torch.tensor(u.toarray(), dtype=torch.float32, device="cuda")
+                v_dense = torch.tensor(v.toarray(), dtype=torch.float32, device="cuda")
+                u_norm = torch.linalg.norm(u_dense, dim=1, keepdim=True).clamp_min(1e-12)
+                v_norm = torch.linalg.norm(v_dense, dim=1).clamp_min(1e-12)
+                sims = ((v_dense @ u_dense[0]) / (v_norm * u_norm[0, 0])).detach().cpu().numpy()
+            else:
+                sims = cosine_similarity(u, v)[0]
+        except Exception:
+            sims = cosine_similarity(u, v)[0]
+
+        for pos, sim in zip(valid_positions, sims.tolist()):
+            scores[pos] = float(max(0.0, min(1.0, sim)))
+        return scores
