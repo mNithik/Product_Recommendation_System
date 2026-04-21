@@ -285,11 +285,26 @@ def item_label(item_id: str, item_titles: dict[str, str]) -> str:
     return f"{item_titles[item_id]} [{item_id}]" if item_id in item_titles else item_id
 
 
-train_path = "data/train.json"
-test_path = "data/test.json"
+def resolve_data_paths() -> tuple[str, str]:
+    full_train = Path("data/train.json")
+    full_test = Path("data/test.json")
+    if full_train.exists() and full_test.exists():
+        return str(full_train), str(full_test)
 
-if not Path(train_path).exists() or not Path(test_path).exists():
-    st.error("Missing `data/train.json` or `data/test.json`. Run `python main.py` first.")
+    small_train = Path("data_small/train.json")
+    small_test = Path("data_small/test.json")
+    if small_train.exists() and small_test.exists():
+        return str(small_train), str(small_test)
+
+    raise FileNotFoundError("Missing both `data/` and `data_small/` train/test files.")
+
+
+try:
+    train_path, test_path = resolve_data_paths()
+except FileNotFoundError:
+    st.error(
+        "Missing `data/train.json` + `data/test.json` and `data_small/train.json` + `data_small/test.json`."
+    )
     st.stop()
 
 train_data, test_data = load_train_test(train_path, test_path)
@@ -305,6 +320,8 @@ st.caption(
     "Explore how the system ranks products for a user, which items make the final recommendation list, "
     "why those items were chosen, and what could make them fall in the ranking."
 )
+if train_path.startswith("data_small"):
+    st.info("Running with `data_small` for lightweight/cloud demo startup.")
 
 top_row = st.columns(4)
 stats = [

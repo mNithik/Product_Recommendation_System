@@ -222,6 +222,15 @@ Launch the demo with:
 streamlit run app/demo.py
 ```
 
+### Deploy on Streamlit Community Cloud
+
+1. Push your branch to GitHub.
+2. In Streamlit Community Cloud, click **Create app**.
+3. Select repository + branch and set entrypoint to `app/demo.py`.
+4. Deploy.
+
+The demo automatically uses `data/train.json` and `data/test.json` when available, and falls back to `data_small/` for lightweight cloud startup.
+
 The demo exposes the staged pipeline clearly:
 
 - user history
@@ -278,6 +287,26 @@ The Streamlit demo also exposes interactive controls for:
 - recommendation model selection
 - causal-adjustment toggle and weights
 - content-aware hybrid toggle and weights
+
+## WSL GPU For Implicit ALS/BPR
+
+If you want GPU acceleration for `implicit` ALS/BPR, run these models in WSL/Linux.
+On Windows native Python, `implicit` typically runs CPU-only.
+
+From PowerShell in this repo:
+
+```powershell
+.\setup_implicit_gpu_wsl.ps1
+.\run_gpu_profile_wsl.ps1
+```
+
+What this does:
+
+- creates `.venv-wsl-gpu` inside the project (in WSL)
+- installs requirements
+- rebuilds `implicit` from source in WSL
+- verifies CUDA usage with `scripts/verify_implicit_gpu.py`
+- runs `main.py --config configs/gpu_profile.yaml --experiment wsl_gpu_run`
 
 ## Testing
 
