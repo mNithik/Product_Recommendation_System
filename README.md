@@ -1,6 +1,6 @@
 # Recommender System for Sparse E-Commerce Ratings
 
-This repository implements a recommender system project on the **Amazon Arts, Crafts & Sewing 5-core** dataset. It preserves the baseline course models, separates **rating prediction** from **Top-N ranking and recommendation**, and adds modular analysis layers for **explainability**, **counterfactual reasoning**, **fairness**, **beyond-accuracy evaluation**, **cold-start benchmarking**, and **content-aware hybrid reranking**.
+This repository implements a recommender system on the **Amazon Arts, Crafts & Sewing 5-core** dataset. It preserves the original working baselines, separates **rating prediction** from **Top-N ranking and recommendation**, and adds modular analysis layers for **explainability**, **counterfactual reasoning**, **fairness**, **beyond-accuracy evaluation**, **cold-start benchmarking**, and **content-aware hybrid reranking**.
 
 **56K users | 23K items | 494K interactions | 99.96% sparsity | explicit-feedback branch | Top-N ranking branch | explainability | Streamlit demo**
 
@@ -32,7 +32,7 @@ This repository is organized around six distinct layers:
 6. **Evaluation beyond average accuracy**
    Adds fairness, coverage, diversity, novelty, and cold-start benchmark reporting.
 
-The project is meant to support both coursework and clear project reporting, so the code emphasizes modularity, explicit stage boundaries, reproducibility, and readable experiments over heavy end-to-end rewrites.
+The code emphasizes modularity, explicit stage boundaries, reproducibility, and readable experiments over heavy end-to-end rewrites.
 
 ## Best Current Results
 
@@ -254,9 +254,9 @@ Evaluation is now split by project concern:
 - `src/evaluation/recommendation.py`
   Also includes beyond-accuracy metrics such as coverage, diversity, novelty, and popularity concentration
 
-## Current Project Status
+## Current Capabilities
 
-The repository now supports the following report-ready evaluation views:
+The repository currently supports:
 
 - rating prediction metrics for explicit-feedback baselines
 - ranking metrics for Top-N recommenders
@@ -424,9 +424,9 @@ For Streamlit Community Cloud:
 - the app can run from `data_small/` for lightweight startup
 - full data is better kept for local/WSL experiments because free cloud memory is limited
 
-## Report
+## Project Write-Up
 
-The report source is:
+The write-up source is:
 
 - `report/CS550_project_report.tex`
 
@@ -442,109 +442,3 @@ It documents:
 ## License / Attribution
 
 This project uses the Amazon Reviews dataset and builds on open-source libraries including PyTorch, scikit-learn, Streamlit, and `implicit`.
-
-python main.py --config configs/default.yaml
-streamlit run app/demo.py
-pytest tests/ -v
-```
-
-## Configuration
-
-Main experiment settings live in `configs/default.yaml`.
-
-Example:
-
-```yaml
-model:
-  type: "bpr"
-  n_factors: 64
-  n_epochs: 20
-  lr: 0.001
-  reg: 0.0001
-  mf_epochs: 5
-
-evaluation:
-  top_n: 10
-  relevance_threshold: 4.0
-  min_train_ratings: 5
-```
-
-The Streamlit demo also exposes interactive controls for:
-
-- recommendation model selection
-- causal-adjustment toggle and weights
-- content-aware hybrid toggle and weights
-
-## WSL GPU For Implicit ALS/BPR
-
-If you want GPU acceleration for `implicit` ALS/BPR, run these models in WSL/Linux.
-On Windows native Python, `implicit` typically runs CPU-only.
-
-From PowerShell in this repo:
-
-```powershell
-.\setup_implicit_gpu_wsl.ps1
-.\run_gpu_profile_wsl.ps1
-```
-
-What this does:
-
-- creates `.venv-wsl-gpu` inside the project (in WSL)
-- installs requirements
-- rebuilds `implicit` from source in WSL
-- verifies CUDA usage with `scripts/verify_implicit_gpu.py`
-- runs `main.py --config configs/gpu_profile.yaml --experiment wsl_gpu_run`
-
-## Testing
-
-The repository includes tests for:
-
-- preprocessing
-- recommendation metrics
-- ranking/recommendation pipeline behavior
-- popularity baseline behavior
-- explanation output structure
-- counterfactual output structure
-- causal-adjustment toggle behavior
-- explanation/counterfactual evaluation summaries
-- late fusion
-- fairness summaries
-- beyond-accuracy recommendation metrics
-- cold-start benchmark summaries
-- content-aware hybrid wrapper
-- review-text profile utilities
-
-## Limitations
-
-The project is intentionally practical rather than fully production-grade. The main current limitations are:
-
-- optional dependencies such as `implicit` and some `torch` configurations may vary by environment
-- counterfactual explanations are approximate and post-hoc rather than model-intrinsic
-- the causal layer is a lightweight score adjustment, not a full causal graph model
-- the content-aware hybrid branch uses TF-IDF review text rather than a heavier neural content encoder
-- offline experiments can be time-consuming on large models and full data
-
-## Future Work
-
-Implemented:
-
-- explicit baseline rating prediction
-- explicit baseline Top-N ranking
-- modular ranking/recommendation pipeline
-- structured explanation engine
-- approximate counterfactual weakening layer
-- optional score adjustment layer
-- optional content-aware hybrid branch
-- fairness, beyond-accuracy, and cold-start evaluation layers
-- cleaner evaluation split
-- Streamlit demo reflecting the staged pipeline
-
-Not implemented yet or intentionally deferred:
-
-- a full causal collaborative filtering model
-- a PETER-style Transformer branch
-- a production retrieval stack
-- full neural explainability architectures
-- deployment-oriented model serving and caching
-
-Those remain valid future-work directions, but the current repository already supports a coherent project report around baseline recommendation, explainability, counterfactual analysis, and optional causal-style post-processing.
