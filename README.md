@@ -230,6 +230,8 @@ streamlit run app/demo.py
 4. Deploy.
 
 The demo automatically uses `data/train.json` and `data/test.json` when available, and falls back to `data_small/` for lightweight cloud startup.
+For cloud runs, you can also set environment variables `TRAIN_JSON_URL` and `TEST_JSON_URL`.
+If full data files are missing, the app will try downloading them first, then fall back to `data_small/` if download fails.
 
 The demo exposes the staged pipeline clearly:
 

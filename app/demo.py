@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import time
+import urllib.request
 from collections import defaultdict
 from pathlib import Path
 
@@ -285,22 +287,50 @@ def item_label(item_id: str, item_titles: dict[str, str]) -> str:
     return f"{item_titles[item_id]} [{item_id}]" if item_id in item_titles else item_id
 
 
-def resolve_data_paths() -> tuple[str, str]:
+def _download_file(url: str, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    urllib.request.urlretrieve(url, dst)
+
+
+def _try_prepare_full_data_from_urls() -> bool:
+    train_url = os.getenv("TRAIN_JSON_URL", "").strip()
+    test_url = os.getenv("TEST_JSON_URL", "").strip()
+    if not train_url or not test_url:
+        return False
+
+    full_train = Path("data/train.json")
+    full_test = Path("data/test.json")
+
+    try:
+        if not full_train.exists():
+            _download_file(train_url, full_train)
+        if not full_test.exists():
+            _download_file(test_url, full_test)
+    except Exception:
+        return False
+
+    return full_train.exists() and full_test.exists()
+
+
+def resolve_data_paths() -> tuple[str, str, str]:
     full_train = Path("data/train.json")
     full_test = Path("data/test.json")
     if full_train.exists() and full_test.exists():
-        return str(full_train), str(full_test)
+        return str(full_train), str(full_test), "full"
+
+    if _try_prepare_full_data_from_urls() and full_train.exists() and full_test.exists():
+        return str(full_train), str(full_test), "full"
 
     small_train = Path("data_small/train.json")
     small_test = Path("data_small/test.json")
     if small_train.exists() and small_test.exists():
-        return str(small_train), str(small_test)
+        return str(small_train), str(small_test), "small"
 
     raise FileNotFoundError("Missing both `data/` and `data_small/` train/test files.")
 
 
 try:
-    train_path, test_path = resolve_data_paths()
+    train_path, test_path, data_mode = resolve_data_paths()
 except FileNotFoundError:
     st.error(
         "Missing `data/train.json` + `data/test.json` and `data_small/train.json` + `data_small/test.json`."
@@ -322,6 +352,8 @@ st.caption(
 )
 if train_path.startswith("data_small"):
     st.info("Running with `data_small` for lightweight/cloud demo startup.")
+elif data_mode == "full":
+    st.success("Running with full `data` split.")
 
 top_row = st.columns(4)
 stats = [
