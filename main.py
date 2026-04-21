@@ -1,14 +1,4 @@
-"""
-Main pipeline for the Product Recommendation System.
-
-Runs ALL models head-to-head:
-  Rating prediction:  Popularity, MF (ALS)
-  Top-N ranking:      Popularity, BPR (custom), BPR (implicit), Implicit ALS, WARP (custom)
-
-Usage:
-    python main.py --config configs/default.yaml
-    python main.py --config configs/default.yaml --experiment my_run
-"""
+"""Main training and evaluation entry point."""
 
 import logging
 import os
@@ -48,6 +38,18 @@ def _fmt(v):
     if isinstance(v, float):
         return f"{v:.4f}"
     return str(v)
+
+
+def _resolve_torch_device(*, use_gpu: bool) -> str:
+    """Resolve torch device for custom PyTorch models without changing baseline flow."""
+    if not use_gpu:
+        return "cpu"
+    try:
+        import torch
+
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except (ImportError, OSError):
+        return "cpu"
 
 
 def _print_results_table(all_results: list[dict]):
@@ -258,6 +260,8 @@ def _run_cold_start_eval(model, name, train_data, test_data, ev, tracker):
         max_users=getattr(ev, "cold_start_max_users", 1500),
         cold_max_train=getattr(ev, "cold_start_threshold", 5),
         warm_min_train=getattr(ev, "warm_user_threshold", 20),
+        use_gpu=bool(getattr(ev, "cold_start_use_gpu", False)),
+        debug=bool(getattr(ev, "cold_start_debug", False)),
     )
     elapsed = time.time() - t0
     logger.info(
@@ -303,6 +307,7 @@ def _fit_or_load_model(
     output_dir: str,
     experiment_name: str,
     eval_only: bool,
+    resume_artifacts: bool,
     save_models: bool,
 ):
     """Fit a model or load a saved artifact, returning (model, fit_time)."""
@@ -313,6 +318,18 @@ def _fit_or_load_model(
             model_name=name,
         )
         return loaded_model, 0.0
+
+    if resume_artifacts:
+        try:
+            loaded_model = load_model_artifact(
+                output_dir=output_dir,
+                experiment_name=experiment_name,
+                model_name=name,
+            )
+            logger.info("  %s — artifact found, skipping retraining.", name)
+            return loaded_model, 0.0
+        except FileNotFoundError:
+            logger.info("  %s — no artifact found, training model.", name)
 
     t0 = time.time()
     model.fit(train_data)
@@ -368,10 +385,8 @@ def main():
     all_results = []
     ev = cfg.evaluation
     save_models = not args.no_save_models
+    resume_artifacts = bool(args.resume_artifacts and not args.eval_only)
 
-    # =========================================================================
-    # Step 1: Preprocessing
-    # =========================================================================
     train_path = cfg.data.train_path
     test_path = cfg.data.test_path
 
@@ -401,9 +416,6 @@ def main():
     tracker.log_metric("train_size", len(train_data), step="data")
     tracker.log_metric("test_size", len(test_data), step="data")
 
-    # =========================================================================
-    # Model 1: Popularity Baseline (rating + ranking)
-    # =========================================================================
     logger.info("\n" + "=" * 60)
     logger.info("MODEL 1: Popularity Baseline")
     logger.info("=" * 60)
@@ -415,6 +427,7 @@ def main():
         output_dir=cfg.experiment.output_dir,
         experiment_name=cfg.experiment.name,
         eval_only=args.eval_only,
+        resume_artifacts=resume_artifacts,
         save_models=save_models,
     )
     _run_rating_eval(pop, "Popularity Baseline", test_data, tracker, all_results)
@@ -424,51 +437,55 @@ def main():
     _run_beyond_accuracy_eval(pop, "Popularity Baseline", train_data, test_data, ev, tracker)
     _run_cold_start_eval(pop, "Popularity Baseline", train_data, test_data, ev, tracker)
 
-    # =========================================================================
-    # Model 2: Matrix Factorization — ALS (rating prediction)
-    # =========================================================================
     logger.info("\n" + "=" * 60)
     logger.info("MODEL 2: Matrix Factorization (ALS, GPU)")
     logger.info("=" * 60)
     try:
         if args.eval_only:
+            logger.info("  [MF] eval-only mode: loading saved artifact")
             mf = _load_saved_model(
                 "Matrix Factorization (ALS)",
                 output_dir=cfg.experiment.output_dir,
                 experiment_name=cfg.experiment.name,
             )
             mf_fit = 0.0
+            logger.info("  [MF] artifact loaded, running rating evaluation")
             _run_rating_eval(mf, "Matrix Factorization (ALS)", test_data, tracker, all_results)
             all_results[-1 if all_results[-1]["model"] == "Matrix Factorization (ALS)" else 0]["time"] = f"{mf_fit:.0f}s"
         else:
-            import torch
-            if torch.cuda.is_available():
-                from src.models import MatrixFactorizationGPU
-                mf_epochs = getattr(cfg.model, "mf_epochs", 5)
-                mf = MatrixFactorizationGPU(
-                    n_factors=cfg.model.n_factors,
-                    reg=0.1,
-                    n_epochs=mf_epochs,
-                )
-                mf, mf_fit = _fit_or_load_model(
-                    mf,
-                    "Matrix Factorization (ALS)",
-                    train_data,
-                    output_dir=cfg.experiment.output_dir,
-                    experiment_name=cfg.experiment.name,
-                    eval_only=args.eval_only,
-                    save_models=save_models,
-                )
-                _run_rating_eval(mf, "Matrix Factorization (ALS)", test_data, tracker, all_results)
-                all_results[-1 if all_results[-1]["model"] == "Matrix Factorization (ALS)" else 0]["time"] = f"{mf_fit:.0f}s"
-            else:
-                logger.warning("CUDA not available, skipping GPU MF")
+            logger.info("  [MF] resolving torch device")
+            torch_device = _resolve_torch_device(use_gpu=bool(getattr(cfg.model, "use_gpu", True)))
+            logger.info("  [MF] selected device: %s", torch_device)
+            if torch_device != "cuda":
+                logger.warning("CUDA not available or disabled; MF will run on CPU for this profile.")
+            logger.info("  [MF] importing MatrixFactorizationGPU")
+            from src.models import MatrixFactorizationGPU
+            logger.info("  [MF] import complete")
+            mf_epochs = getattr(cfg.model, "mf_epochs", 5)
+            logger.info("  [MF] constructing model (n_factors=%s, epochs=%s)", cfg.model.n_factors, mf_epochs)
+            mf = MatrixFactorizationGPU(
+                n_factors=cfg.model.n_factors,
+                reg=0.1,
+                n_epochs=mf_epochs,
+                device=torch_device,
+            )
+            logger.info("  [MF] model constructed, starting fit/load")
+            mf, mf_fit = _fit_or_load_model(
+                mf,
+                "Matrix Factorization (ALS)",
+                train_data,
+                output_dir=cfg.experiment.output_dir,
+                experiment_name=cfg.experiment.name,
+                eval_only=args.eval_only,
+                resume_artifacts=resume_artifacts,
+                save_models=save_models,
+            )
+            logger.info("  [MF] fit/load finished in %.1fs, running rating evaluation", mf_fit)
+            _run_rating_eval(mf, "Matrix Factorization (ALS)", test_data, tracker, all_results)
+            all_results[-1 if all_results[-1]["model"] == "Matrix Factorization (ALS)" else 0]["time"] = f"{mf_fit:.0f}s"
     except (ImportError, OSError) as exc:
         logger.warning("Skipping MF due to dependency/runtime issue: %s", exc)
 
-    # =========================================================================
-    # Model 3: BPR — custom PyTorch (ranking)
-    # =========================================================================
     logger.info("\n" + "=" * 60)
     logger.info("MODEL 3: BPR (custom PyTorch)")
     logger.info("=" * 60)
@@ -488,6 +505,7 @@ def main():
                 lr=cfg.model.lr,
                 reg=cfg.model.reg,
                 pos_threshold=ev.relevance_threshold,
+                device=_resolve_torch_device(use_gpu=bool(getattr(cfg.model, "use_gpu", True))),
             )
             bpr_custom, bpr_fit = _fit_or_load_model(
                 bpr_custom,
@@ -496,6 +514,7 @@ def main():
                 output_dir=cfg.experiment.output_dir,
                 experiment_name=cfg.experiment.name,
                 eval_only=args.eval_only,
+                resume_artifacts=resume_artifacts,
                 save_models=save_models,
             )
         _run_ranking_eval(bpr_custom, "BPR (custom PyTorch)", train_data, test_data, ev, tracker, all_results, bpr_fit)
@@ -510,9 +529,6 @@ def main():
     except (ImportError, OSError, FileNotFoundError) as exc:
         logger.warning("Skipping BPR (custom PyTorch) due to dependency/runtime issue: %s", exc)
 
-    # =========================================================================
-    # Model 4: BPR — implicit library (ranking)
-    # =========================================================================
     logger.info("\n" + "=" * 60)
     logger.info("MODEL 4: BPR (implicit library)")
     logger.info("=" * 60)
@@ -532,6 +548,7 @@ def main():
                 lr=cfg.model.lr,
                 reg=cfg.model.reg,
                 pos_threshold=ev.relevance_threshold,
+                use_gpu=bool(getattr(cfg.model, "use_gpu", True)),
             )
             bpr_impl, bpr_impl_fit = _fit_or_load_model(
                 bpr_impl,
@@ -540,6 +557,7 @@ def main():
                 output_dir=cfg.experiment.output_dir,
                 experiment_name=cfg.experiment.name,
                 eval_only=args.eval_only,
+                resume_artifacts=resume_artifacts,
                 save_models=save_models,
             )
         _run_ranking_eval(bpr_impl, "BPR (implicit library)", train_data, test_data, ev, tracker, all_results, bpr_impl_fit)
@@ -554,9 +572,6 @@ def main():
     except (ImportError, OSError, FileNotFoundError) as exc:
         logger.warning("Skipping BPR (implicit library) due to dependency/runtime issue: %s", exc)
 
-    # =========================================================================
-    # Model 5: Implicit ALS (ranking)
-    # =========================================================================
     logger.info("\n" + "=" * 60)
     logger.info("MODEL 5: Implicit ALS (Hu-Koren-Volinsky)")
     logger.info("=" * 60)
@@ -575,6 +590,7 @@ def main():
                 n_epochs=15,
                 reg=cfg.model.reg,
                 pos_threshold=ev.relevance_threshold,
+                use_gpu=bool(getattr(cfg.model, "use_gpu", True)),
             )
             ials, ials_fit = _fit_or_load_model(
                 ials,
@@ -583,6 +599,7 @@ def main():
                 output_dir=cfg.experiment.output_dir,
                 experiment_name=cfg.experiment.name,
                 eval_only=args.eval_only,
+                resume_artifacts=resume_artifacts,
                 save_models=save_models,
             )
         _run_ranking_eval(ials, "Implicit ALS", train_data, test_data, ev, tracker, all_results, ials_fit)
@@ -597,9 +614,6 @@ def main():
     except (ImportError, OSError, FileNotFoundError) as exc:
         logger.warning("Skipping Implicit ALS due to dependency/runtime issue: %s", exc)
 
-    # =========================================================================
-    # Model 6: WARP — custom PyTorch (ranking)
-    # =========================================================================
     logger.info("\n" + "=" * 60)
     logger.info("MODEL 6: WARP (custom PyTorch)")
     logger.info("=" * 60)
@@ -619,6 +633,7 @@ def main():
                 lr=cfg.model.lr,
                 reg=cfg.model.reg,
                 pos_threshold=ev.relevance_threshold,
+                device=_resolve_torch_device(use_gpu=bool(getattr(cfg.model, "use_gpu", True))),
             )
             warp, warp_fit = _fit_or_load_model(
                 warp,
@@ -627,6 +642,7 @@ def main():
                 output_dir=cfg.experiment.output_dir,
                 experiment_name=cfg.experiment.name,
                 eval_only=args.eval_only,
+                resume_artifacts=resume_artifacts,
                 save_models=save_models,
             )
         _run_ranking_eval(warp, "WARP (custom PyTorch)", train_data, test_data, ev, tracker, all_results, warp_fit)
@@ -641,9 +657,6 @@ def main():
     except (ImportError, OSError, FileNotFoundError) as exc:
         logger.warning("Skipping WARP (custom PyTorch) due to dependency/runtime issue: %s", exc)
 
-    # =========================================================================
-    # Final Results
-    # =========================================================================
     _print_results_table(all_results)
 
     tracker.record["results_table"] = all_results

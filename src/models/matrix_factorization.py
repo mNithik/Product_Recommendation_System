@@ -191,16 +191,49 @@ class MatrixFactorizationGPU:
     def recommend_top_n_batch(self, user_indices, exclude_sets, n=10,
                               max_candidates=10000, min_item_ratings=0):
         import torch
-        all_recs = []
-        for b, u in enumerate(user_indices):
-            candidates = self._get_candidates(u, exclude_sets[b], max_candidates, min_item_ratings=min_item_ratings)
+        candidate_lists = [
+            self._get_candidates(u, exclude_sets[b], max_candidates, min_item_ratings=min_item_ratings)
+            for b, u in enumerate(user_indices)
+        ]
+        max_len = max((len(c) for c in candidate_lists), default=0)
+        if max_len == 0:
+            return [[self.rev_item[0]] * n for _ in user_indices]
+
+        pad_item = 0
+        cand_tensor = torch.full(
+            (len(user_indices), max_len),
+            fill_value=pad_item,
+            dtype=torch.long,
+            device=self.device,
+        )
+        valid_mask = torch.zeros((len(user_indices), max_len), dtype=torch.bool, device=self.device)
+
+        for row, candidates in enumerate(candidate_lists):
             if not candidates:
-                all_recs.append([self.rev_item[0]] * n)
                 continue
-            c_t = torch.tensor(candidates, dtype=torch.long, device=self.device)
-            scores = self._rank_scores(u, c_t)
-            top_pos = np.argsort(-scores)[:n]
-            recs = [self.rev_item[candidates[i]] for i in top_pos]
+            length = len(candidates)
+            cand_tensor[row, :length] = torch.tensor(candidates, dtype=torch.long, device=self.device)
+            valid_mask[row, :length] = True
+
+        user_tensor = torch.tensor(user_indices, dtype=torch.long, device=self.device)
+        user_emb = self.U[user_tensor].unsqueeze(1)
+        item_emb = self.V[cand_tensor]
+        raw = (user_emb * item_emb).sum(dim=2)
+        pop = torch.tensor(
+            self.item_rating_counts[cand_tensor.cpu().numpy()],
+            dtype=torch.float32,
+            device=self.device,
+        )
+        penalty = torch.log2(2.0 + pop)
+        scores = (raw / penalty).masked_fill(~valid_mask, float("-inf"))
+
+        k = min(int(n), int(scores.shape[1]))
+        top_positions = torch.topk(scores, k=k, dim=1, largest=True).indices.cpu().tolist()
+
+        all_recs = []
+        for row, positions in enumerate(top_positions):
+            candidates = candidate_lists[row]
+            recs = [self.rev_item[candidates[pos]] for pos in positions if pos < len(candidates)]
             if len(recs) < n:
                 recs += [self.rev_item[0]] * (n - len(recs))
             all_recs.append(recs)

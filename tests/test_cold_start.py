@@ -34,6 +34,19 @@ def test_summarize_user_regimes_returns_expected_fields():
     assert metrics["cold_warm_ndcg_gap"] >= 0.0
 
 
+def test_summarize_user_regimes_gpu_flag_falls_back_safely():
+    rows = [
+        {"user": "U1", "n_train": 2, "precision": 0.0, "recall": 0.0, "ndcg": 0.0},
+        {"user": "U2", "n_train": 4, "precision": 0.1, "recall": 0.2, "ndcg": 0.05},
+        {"user": "U3", "n_train": 25, "precision": 0.3, "recall": 0.4, "ndcg": 0.20},
+    ]
+    metrics = summarize_user_regimes(rows, cold_max_train=5, warm_min_train=20, use_gpu=True)
+
+    assert metrics["n_cold_users"] == 2.0
+    assert metrics["n_warm_users"] == 1.0
+    assert "cold_mean_ndcg" in metrics
+
+
 def test_compare_cold_start_benchmarks_returns_deltas():
     baseline = {"cold_mean_ndcg": 0.05, "warm_mean_ndcg": 0.10, "cold_mean_precision": 0.02, "cold_mean_recall": 0.04}
     hybrid = {"cold_mean_ndcg": 0.08, "warm_mean_ndcg": 0.11, "cold_mean_precision": 0.03, "cold_mean_recall": 0.05}

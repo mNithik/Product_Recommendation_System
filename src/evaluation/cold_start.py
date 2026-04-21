@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+
 import pandas as pd
 
 from .metrics import evaluate_recommendations_per_user
+
+logger = logging.getLogger(__name__)
 
 
 def summarize_user_regimes(
@@ -12,6 +16,8 @@ def summarize_user_regimes(
     *,
     cold_max_train: int = 5,
     warm_min_train: int = 20,
+    use_gpu: bool = False,
+    debug: bool = False,
 ) -> dict[str, float]:
     """
     Summarize recommendation quality for sparse and warm user regimes.
@@ -33,6 +39,61 @@ def summarize_user_regimes(
             "cold_warm_ndcg_gap": 0.0,
         }
 
+    if use_gpu:
+        if debug:
+            logger.info(
+                "[cold-start] trying GPU aggregation (rows=%d, cold<=%d, warm>=%d)",
+                len(per_user_rows),
+                cold_max_train,
+                warm_min_train,
+            )
+        try:
+            import torch
+
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            if debug:
+                logger.info("[cold-start] torch device resolved to %s", device)
+            n_train = torch.tensor([float(row.get("n_train", 0.0)) for row in per_user_rows], device=device)
+            precision = torch.tensor([float(row.get("precision", 0.0)) for row in per_user_rows], device=device)
+            recall = torch.tensor([float(row.get("recall", 0.0)) for row in per_user_rows], device=device)
+            ndcg = torch.tensor([float(row.get("ndcg", 0.0)) for row in per_user_rows], device=device)
+
+            cold_mask = n_train <= float(cold_max_train)
+            warm_mask = n_train >= float(warm_min_train)
+
+            def _masked_mean(values, mask) -> float:
+                count = int(mask.sum().item())
+                if count == 0:
+                    return 0.0
+                return float(values[mask].mean().item())
+
+            cold_precision = _masked_mean(precision, cold_mask)
+            warm_precision = _masked_mean(precision, warm_mask)
+            cold_recall = _masked_mean(recall, cold_mask)
+            warm_recall = _masked_mean(recall, warm_mask)
+            cold_ndcg = _masked_mean(ndcg, cold_mask)
+            warm_ndcg = _masked_mean(ndcg, warm_mask)
+
+            return {
+                "n_cold_users": float(cold_mask.sum().item()),
+                "n_warm_users": float(warm_mask.sum().item()),
+                "cold_mean_precision": cold_precision,
+                "warm_mean_precision": warm_precision,
+                "cold_mean_recall": cold_recall,
+                "warm_mean_recall": warm_recall,
+                "cold_mean_ndcg": cold_ndcg,
+                "warm_mean_ndcg": warm_ndcg,
+                "cold_warm_precision_gap": warm_precision - cold_precision,
+                "cold_warm_recall_gap": warm_recall - cold_recall,
+                "cold_warm_ndcg_gap": warm_ndcg - cold_ndcg,
+            }
+        except (ImportError, OSError, RuntimeError, ValueError) as exc:
+            if debug:
+                logger.warning("[cold-start] GPU aggregation failed, falling back to CPU: %s", exc)
+            pass
+
+    if debug:
+        logger.info("[cold-start] using CPU pandas aggregation")
     df = pd.DataFrame(per_user_rows)
     cold = df[df["n_train"] <= cold_max_train]
     warm = df[df["n_train"] >= warm_min_train]
@@ -78,8 +139,18 @@ def evaluate_cold_start_benchmark(
     max_users: int | None = None,
     cold_max_train: int = 5,
     warm_min_train: int = 20,
+    use_gpu: bool = False,
+    debug: bool = False,
 ) -> dict[str, float]:
     """Run the standard recommendation protocol and summarize sparse-user performance."""
+    if debug:
+        logger.info(
+            "[cold-start] evaluation started (top_n=%d, max_users=%s, max_candidates=%d, use_gpu=%s)",
+            top_n,
+            str(max_users),
+            max_candidates,
+            str(use_gpu),
+        )
     per_user_rows = evaluate_recommendations_per_user(
         model,
         train_data,
@@ -96,6 +167,8 @@ def evaluate_cold_start_benchmark(
         per_user_rows,
         cold_max_train=cold_max_train,
         warm_min_train=warm_min_train,
+        use_gpu=use_gpu,
+        debug=debug,
     )
 
 

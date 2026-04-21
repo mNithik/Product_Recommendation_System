@@ -144,8 +144,9 @@ class WARPModel:
     def recommend_top_n(self, user_id: str, n: int = 10, exclude_items=None) -> list[str]:
         if user_id not in self.user_idx:
             return []
+        import torch
         u = self.user_idx[user_id]
-        scores = (self.U[u] @ self.V.T).cpu().numpy()
+        scores = (self.U[u] @ self.V.T)
 
         exclude_idx = self.user_items.get(u, set())
         if exclude_items:
@@ -153,20 +154,32 @@ class WARPModel:
                 if iid in self.item_idx:
                     exclude_idx = exclude_idx | {self.item_idx[iid]}
         for idx in exclude_idx:
-            scores[idx] = -np.inf
+            scores[idx] = float("-inf")
 
-        top_pos = np.argsort(-scores)[:n]
+        k = min(int(n), int(scores.numel()))
+        top_pos = torch.topk(scores, k=k, largest=True).indices.tolist()
         return [self.rev_item[i] for i in top_pos]
 
     def recommend_top_n_batch(self, user_indices, exclude_sets, n=10, **kwargs):
+        import torch
+        if not user_indices:
+            return []
+
+        user_tensor = torch.tensor(user_indices, dtype=torch.long, device=self.device)
+        scores = self.U[user_tensor] @ self.V.T
+
+        for row, u in enumerate(user_indices):
+            exclude_idx = self.user_items.get(u, set()) | exclude_sets[row]
+            if exclude_idx:
+                idx_tensor = torch.tensor(list(exclude_idx), dtype=torch.long, device=self.device)
+                scores[row, idx_tensor] = float("-inf")
+
+        k = min(int(n), int(scores.shape[1]))
+        top_indices = torch.topk(scores, k=k, dim=1, largest=True).indices.cpu().tolist()
+
         all_recs = []
-        for b, u in enumerate(user_indices):
-            scores = (self.U[u] @ self.V.T).cpu().numpy()
-            exclude_idx = self.user_items.get(u, set()) | exclude_sets[b]
-            for idx in exclude_idx:
-                scores[idx] = -np.inf
-            top_pos = np.argsort(-scores)[:n]
-            recs = [self.rev_item[i] for i in top_pos]
+        for row in top_indices:
+            recs = [self.rev_item[i] for i in row]
             if len(recs) < n:
                 recs += [self.rev_item[0]] * (n - len(recs))
             all_recs.append(recs)

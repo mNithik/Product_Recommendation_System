@@ -102,6 +102,11 @@ def parse_args() -> argparse.Namespace:
         help="Skip training and evaluate using saved model artifacts for the experiment",
     )
     parser.add_argument(
+        "--resume-artifacts",
+        action="store_true",
+        help="Load model artifacts when available and train only missing models",
+    )
+    parser.add_argument(
         "--no-save-models",
         action="store_true",
         help="Do not save fitted model artifacts after training",

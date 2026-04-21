@@ -77,7 +77,10 @@ def _score_from_implicit_factors(model, user_id: str, item_id: str) -> float | N
     i = model.item_idx.get(item_id)
     if u is None or i is None:
         return None
-    return _to_python_float(np.dot(backend.user_factors[u], backend.item_factors[i]))
+    try:
+        return _to_python_float(np.dot(backend.user_factors[u], backend.item_factors[i]))
+    except (TypeError, ValueError, AttributeError):
+        return None
 
 
 def _score_from_predict(model, user_id: str, item_id: str) -> float | None:
@@ -131,6 +134,21 @@ def _make_ranked_items(model, user_id: str, ranked_ids: list[str]) -> tuple[list
     return items, score_source
 
 
+def _make_ranked_items_from_scored(
+    ranked_rows: list[tuple[str, float | None]]
+) -> tuple[list[RankedItem], str]:
+    items: list[RankedItem] = []
+    for rank, (item_id, score) in enumerate(ranked_rows, start=1):
+        items.append(
+            RankedItem(
+                item_id=item_id,
+                rank=rank,
+                score=_to_python_float(score),
+            )
+        )
+    return items, "model_recommend"
+
+
 def rank_items_for_user(
     model,
     user_id: str,
@@ -147,6 +165,25 @@ def rank_items_for_user(
     object. Later phases can replace this with true scored candidate ranking
     without changing callers.
     """
+    if hasattr(model, "recommend_top_n_scored"):
+        ranked_rows = model.recommend_top_n_scored(
+            user_id,
+            n=n_candidates,
+            exclude_items=exclude_items,
+        )
+        items, score_source = _make_ranked_items_from_scored(ranked_rows)
+        return RankingResult(
+            user_id=user_id,
+            items=items,
+            metadata={
+                "n_candidates": int(n_candidates),
+                "max_candidates": int(max_candidates),
+                "min_item_ratings": int(min_item_ratings),
+                "source_model": type(model).__name__,
+                "score_source": score_source,
+            },
+        )
+
     ranked_ids = model.recommend_top_n(
         user_id,
         n=n_candidates,
@@ -181,6 +218,33 @@ def rank_items_for_users(
     When available, this delegates to ``recommend_top_n_batch`` to preserve the
     existing optimized inference path.
     """
+    if hasattr(model, "recommend_top_n_batch_scored"):
+        scored_batch = model.recommend_top_n_batch_scored(
+            user_indices,
+            exclude_sets,
+            n=n_candidates,
+            max_candidates=max_candidates,
+            min_item_ratings=min_item_ratings,
+        )
+        results: list[RankingResult] = []
+        for user_id, ranked_rows in zip(user_ids, scored_batch):
+            items, score_source = _make_ranked_items_from_scored(ranked_rows)
+            results.append(
+                RankingResult(
+                    user_id=user_id,
+                    items=items,
+                    metadata={
+                        "n_candidates": int(n_candidates),
+                        "max_candidates": int(max_candidates),
+                        "min_item_ratings": int(min_item_ratings),
+                        "source_model": type(model).__name__,
+                        "batched": True,
+                        "score_source": score_source,
+                    },
+                )
+            )
+        return results
+
     if hasattr(model, "recommend_top_n_batch"):
         recs_batch = model.recommend_top_n_batch(
             user_indices,

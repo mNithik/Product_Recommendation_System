@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
-from src.evaluation.late_fusion import rank_items_late_fusion
+from src.evaluation.late_fusion import cf_position_scores
 
 
 @dataclass(frozen=True)
@@ -87,13 +87,16 @@ class ContentHybridRanker:
         if not pool:
             return self._popularity_fallback(user_id, n, exclude_items=exclude_items)
 
-        ranked = rank_items_late_fusion(
-            pool,
-            self.train_data,
-            user_id,
-            self.text_index.cosine_user_item,
-            alpha=self._effective_alpha(user_id),
-        )
+        alpha = self._effective_alpha(user_id)
+        cf_by_asin = cf_position_scores(pool)
+        text_scores = self.text_index.cosine_user_items(self.train_data, user_id, pool)
+        ranked = []
+        for asin, text_sim in zip(pool, text_scores):
+            c = float(cf_by_asin.get(asin, 0.0))
+            t = float(max(0.0, min(1.0, text_sim)))
+            fused = alpha * c + (1.0 - alpha) * t
+            ranked.append((asin, fused, c, t))
+        ranked.sort(key=lambda row: -row[1])
         return [row[0] for row in ranked[:n]]
 
     def recommend_top_n_batch(self, user_indices, exclude_sets, n=10, **kwargs):
