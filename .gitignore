@@ -20,6 +20,8 @@ dist/
 build/
 .env
 .venv/
+.venv-wsl-gpu/
+.venv311-gpu/
 venv/
 
 # IDE
@@ -39,6 +41,10 @@ Thumbs.db
 .pytest_cache/
 tests_artifacts_tmp/
 submission_snapshot_baseline_2026-04-19/
+submission_snapshot_current_2026-04-20/
+tmp_build/
+implicit_build.log
+implicit_build_cuda128.log
 
 # Project report (LaTeX source and build products stay local only)
 report/*.tex
@@ -46,3 +52,8 @@ report/*.aux
 report/*.log
 report/*.out
 report/*.pdf
+
+# Local downloads / installers
+*.deb
+*.deb.*
+*.zip

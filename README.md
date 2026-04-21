@@ -1,8 +1,19 @@
-# Recommender Systems Project
+# Recommender System for Sparse E-Commerce Ratings
 
-A recommender-systems project built on the **Amazon Arts, Crafts & Sewing 5-core** dataset. The repository preserves the original baseline models, cleanly separates rating prediction from Top-N recommendation, and adds modular post-hoc explainability, approximate counterfactual reasoning, fairness and beyond-accuracy evaluation, cold-start benchmarking, and an optional content-aware hybrid branch.
+This repository implements a recommender system project on the **Amazon Arts, Crafts & Sewing 5-core** dataset. It preserves the baseline course models, separates **rating prediction** from **Top-N ranking and recommendation**, and adds modular analysis layers for **explainability**, **counterfactual reasoning**, **fairness**, **beyond-accuracy evaluation**, **cold-start benchmarking**, and **content-aware hybrid reranking**.
 
-**56K users | 23K items | 494K interactions | 99.96% sparse | explicit + ranking baselines | explainability | interactive demo**
+**56K users | 23K items | 494K interactions | 99.96% sparsity | explicit-feedback branch | Top-N ranking branch | explainability | Streamlit demo**
+
+## What This Project Includes
+
+- explicit rating prediction with `PopularityBaseline` and `MatrixFactorizationGPU`
+- Top-N ranking with popularity, custom PyTorch `BPR`, custom PyTorch `WARP`, `implicit` BPR, and `implicit` ALS
+- a clean `ranking -> recommendation` pipeline instead of mixing model scoring and UI output
+- post-hoc structured explanations with support evidence and weakening conditions
+- beyond-accuracy reporting: coverage, diversity, novelty, popularity concentration
+- subgroup analysis: fairness summaries and cold-vs-warm user benchmarking
+- an optional TF-IDF content-aware hybrid reranker
+- a Streamlit demo for browsing users, ranked candidates, recommendations, and explanations
 
 ## Project Goals
 
@@ -22,6 +33,47 @@ This repository is organized around six distinct layers:
    Adds fairness, coverage, diversity, novelty, and cold-start benchmark reporting.
 
 The project is meant to support both coursework and clear project reporting, so the code emphasizes modularity, explicit stage boundaries, reproducibility, and readable experiments over heavy end-to-end rewrites.
+
+## Best Current Results
+
+These numbers come from the documented full-data run stored under `experiments/`.
+
+### Rating prediction
+
+| Model | MAE | RMSE |
+|---|---:|---:|
+| Popularity baseline | 0.6234 | 0.9340 |
+| Matrix factorization (ALS-style, PyTorch) | **0.4637** | **0.8194** |
+
+### Top-10 ranking
+
+| Model | P@10 | R@10 | F1 | NDCG@10 |
+|---|---:|---:|---:|---:|
+| Popularity baseline | 0.0023 | 0.0087 | 0.0036 | 0.0086 |
+| BPR (custom PyTorch) | 0.0019 | 0.0072 | 0.0030 | 0.0079 |
+| BPR (`implicit`) | 0.0009 | 0.0033 | 0.0015 | 0.0021 |
+| WARP (custom PyTorch) | 0.0154 | 0.0618 | 0.0247 | 0.0478 |
+| Implicit ALS | **0.0190** | **0.0747** | **0.0303** | **0.0674** |
+
+### Beyond-accuracy highlights
+
+- **Best coverage:** `WARP + content hybrid` (`0.0419`)
+- **Best novelty:** `BPR (custom PyTorch)` (`6.0751`)
+- **Strongest overall Top-N ranker:** `Implicit ALS`
+- **Largest cold-user gain from hybrid reranking:** `BPR + content hybrid`
+
+## What The Metrics Mean
+
+- `MAE`, `RMSE`: lower is better; these measure rating-prediction error
+- `Precision@10`: higher is better; more of the displayed Top-10 items are relevant
+- `Recall@10`: higher is better; more of the user’s relevant held-out items are recovered
+- `F1`: higher is better; balances precision and recall
+- `NDCG@10`: higher is better; rewards relevant items appearing higher in the ranked list
+- `Coverage`: higher is better; more of the catalog appears at least once
+- `Diversity`: higher is better; recommendation lists are less repetitive
+- `Novelty`: higher is better; recommendations are less dominated by obvious popular items
+- `PopularityConcentration`: lower is better; recommendations are less collapsed onto a narrow head of items
+- `Cold/Warm gap`: closer to zero means more balanced behavior across sparse-history and rich-history users
 
 ## Dataset
 
@@ -248,6 +300,21 @@ The demo exposes the staged pipeline clearly:
 - fairness snapshot
 - coverage, diversity, and novelty snapshot
 
+## Repository Layout
+
+- `main.py`: main offline training/evaluation pipeline
+- `app/demo.py`: Streamlit demo
+- `configs/default.yaml`: default experiment settings
+- `configs/gpu_profile.yaml`: WSL/GPU-oriented run profile
+- `src/models/`: baseline rating and ranking models
+- `src/pipeline/`: explicit ranking and recommendation stages
+- `src/explainability/`: explanation engine, item support, counterfactual reasoning
+- `src/postprocessing/`: optional score-adjustment layer
+- `src/hybrid/`: TF-IDF content-aware reranking wrapper
+- `src/evaluation/`: rating, recommendation, fairness, explanation, and cold-start evaluation
+- `tests/`: regression and evaluation tests
+- `report/`: project report sources
+
 ## Quick Start
 
 ```bash
@@ -257,6 +324,124 @@ pip install -r requirements.txt
 
 # Place Arts_Crafts_and_Sewing_5.json in:
 # Arts_Crafts_and_Sewing_5.json/Arts_Crafts_and_Sewing_5.json
+```
+
+Then run the default experiment:
+
+```bash
+python main.py --config configs/default.yaml --experiment baseline_run
+```
+
+## Common Run Commands
+
+### CPU / default run
+
+```bash
+python main.py --config configs/default.yaml --experiment baseline_run
+```
+
+### Evaluation-only run from saved artifacts
+
+```bash
+python main.py --config configs/default.yaml --experiment baseline_run --eval-only
+```
+
+### Resume a partially completed run
+
+```bash
+python main.py --config configs/gpu_profile.yaml --experiment wsl_gpu_run --resume-artifacts
+```
+
+### WSL GPU run
+
+From Ubuntu/WSL:
+
+```bash
+cd /mnt/c/Users/nithi/OneDrive/Documents/SPRING2026/DATAMINING/PROJECT
+source .venv-wsl-gpu/bin/activate
+python main.py --config configs/gpu_profile.yaml --experiment wsl_gpu_run
+```
+
+### Streamlit demo
+
+```bash
+streamlit run app/demo.py
+```
+
+## WSL GPU Setup
+
+For `implicit` CUDA support on Windows, the recommended path is **WSL2 + Ubuntu**, not native Windows Python.
+
+Project helper scripts:
+
+- `scripts/setup_implicit_gpu_wsl.sh`
+- `setup_implicit_gpu_wsl.ps1`
+- `run_gpu_profile_wsl.ps1`
+- `scripts/verify_implicit_gpu.py`
+
+Typical WSL flow:
+
+```bash
+cd /mnt/c/Users/nithi/OneDrive/Documents/SPRING2026/DATAMINING/PROJECT
+bash scripts/setup_implicit_gpu_wsl.sh
+source .venv-wsl-gpu/bin/activate
+python scripts/verify_implicit_gpu.py
+python main.py --config configs/gpu_profile.yaml --experiment wsl_gpu_run
+```
+
+If verification prints `HAS_CUDA: True`, the `implicit` GPU path is available in WSL.
+
+## Tests
+
+Run the test suite with:
+
+```bash
+pytest
+```
+
+Targeted examples:
+
+```bash
+pytest tests/test_cold_start.py
+pytest tests/test_content_hybrid.py
+pytest tests/test_counterfactual.py
+```
+
+## Reproducibility Notes
+
+- Train/test splitting is user-level with a fixed random seed by default
+- Ranking models are evaluated separately from the explicit rating branch
+- Hybrid reranking is optional and does not replace the underlying collaborative model
+- Model artifacts are stored under `experiments/<run_name>/models/`
+- JSON summaries are written under `experiments/`
+
+## Demo / Cloud Note
+
+For local runs, the demo uses `data/train.json` and `data/test.json` when available.
+
+For Streamlit Community Cloud:
+
+- the app can run from `data_small/` for lightweight startup
+- full data is better kept for local/WSL experiments because free cloud memory is limited
+
+## Report
+
+The report source is:
+
+- `report/CS550_project_report.tex`
+
+It documents:
+
+- rating prediction results
+- Top-N ranking results
+- beyond-accuracy metrics
+- cold-vs-warm subgroup analysis
+- hybrid-vs-base comparisons
+- explainability and counterfactual extensions
+
+## License / Attribution
+
+This project uses the Amazon Reviews dataset and builds on open-source libraries including PyTorch, scikit-learn, Streamlit, and `implicit`.
 
 python main.py --config configs/default.yaml
 streamlit run app/demo.py
