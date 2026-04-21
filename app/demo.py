@@ -342,7 +342,23 @@ def _try_prepare_full_data_from_urls() -> bool:
     return ok
 
 
+def _running_on_streamlit_cloud() -> bool:
+    if os.getenv("STREAMLIT_SHARING_MODE", "").strip():
+        return True
+    if os.getenv("STREAMLIT_CLOUD", "").strip():
+        return True
+    if Path("/mount/src").exists() and Path("/home/adminuser").exists():
+        return True
+    return False
+
+
 def resolve_data_paths() -> tuple[str, str, str]:
+    if _running_on_streamlit_cloud():
+        small_train = Path("data_small/train.json")
+        small_test = Path("data_small/test.json")
+        if small_train.exists() and small_test.exists():
+            return str(small_train), str(small_test), "small"
+
     full_train = Path("data/train.json")
     full_test = Path("data/test.json")
     if _is_valid_jsonl(full_train) and _is_valid_jsonl(full_test):
